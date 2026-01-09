@@ -9,6 +9,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime, timedelta
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import r2_score
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -134,13 +137,43 @@ for holiday, dates in holidays_dict.items():
         df.loc[mask, 'days_from_holiday'] = (df.loc[mask, 'Date'] - holiday_date).dt.days
 
 # ============================================================================
-# 3. EXPLORATORY ANALYSIS
+# 3. DETREND DATA (Remove overall time trend)
+# ============================================================================
+print("\n" + "=" * 80)
+print("DETRENDING DATA")
+print("=" * 80)
+
+target_var = 'Number of  reported results'
+
+# Fit polynomial trend (degree 3 for flexibility)
+print("\nFitting trend model...")
+
+# Create numeric time variable
+X_trend = df['days_since_start'].values.reshape(-1, 1)
+y = df[target_var].values
+
+# Fit polynomial trend
+poly = PolynomialFeatures(degree=3)
+X_poly = poly.fit_transform(X_trend)
+trend_model = LinearRegression()
+trend_model.fit(X_poly, y)
+df['trend'] = trend_model.predict(X_poly)
+
+# Calculate residuals (detrended data)
+df['residuals'] = df[target_var] - df['trend']
+df['residuals_pct'] = (df['residuals'] / df['trend'] * 100)  # Percentage deviation from trend
+
+# Calculate R² for trend
+trend_r2 = r2_score(y, df['trend'])
+print(f"Trend model R²: {trend_r2:.4f}")
+print(f"Trend explains {trend_r2*100:.2f}% of variance in reported results")
+
+# ============================================================================
+# 4. EXPLORATORY ANALYSIS
 # ============================================================================
 print("\n" + "=" * 80)
 print("EXPLORATORY ANALYSIS")
 print("=" * 80)
-
-target_var = 'Number of  reported results'
 
 # Summary statistics
 print(f"\n1. SUMMARY STATISTICS FOR '{target_var}'")
@@ -151,8 +184,14 @@ print(f"Mean: {df[target_var].mean():,.0f}")
 print(f"Median: {df[target_var].median():,.0f}")
 print(f"Std Dev: {df[target_var].std():,.0f}")
 
+print(f"\n2. SUMMARY STATISTICS FOR RESIDUALS (Detrended)")
+print("-" * 80)
+print(df['residuals'].describe())
+print(f"\nMean residual: {df['residuals'].mean():,.0f}")
+print(f"Std Dev: {df['residuals'].std():,.0f}")
+
 # ============================================================================
-# 4. VISUALIZATIONS
+# 5. VISUALIZATIONS
 # ============================================================================
 print("\n" + "=" * 80)
 print("CREATING VISUALIZATIONS")
@@ -162,49 +201,70 @@ print("=" * 80)
 import os
 os.makedirs('plots', exist_ok=True)
 
-# 4.1 Time series plot
-print("\n1. Creating time series plot...")
-fig, ax = plt.subplots(figsize=(14, 6))
-ax.plot(df['Date'], df[target_var], linewidth=1.5, alpha=0.7)
-ax.set_xlabel('Date', fontsize=12)
-ax.set_ylabel('Number of Reported Results', fontsize=12)
-ax.set_title('Wordle Results Over Time', fontsize=14, fontweight='bold')
-ax.grid(True, alpha=0.3)
+# 5.1 Time series plot with trend
+print("\n1. Creating time series plot with trend...")
+fig, axes = plt.subplots(2, 1, figsize=(14, 10))
+
+# Raw data with trend
+axes[0].plot(df['Date'], df[target_var], linewidth=1.5, alpha=0.7, label='Actual', color='steelblue')
+axes[0].plot(df['Date'], df['trend'], linewidth=2, alpha=0.8, label='Trend', color='red', linestyle='--')
+axes[0].set_xlabel('Date', fontsize=12)
+axes[0].set_ylabel('Number of Reported Results', fontsize=12)
+axes[0].set_title('Wordle Results Over Time (with Trend)', fontsize=14, fontweight='bold')
+axes[0].grid(True, alpha=0.3)
+axes[0].legend()
 
 # Highlight holidays
 holiday_dates = df[df['is_holiday']]['Date']
 holiday_values = df[df['is_holiday']][target_var]
-ax.scatter(holiday_dates, holiday_values, color='red', s=50, alpha=0.6, 
-           label='Holidays', zorder=5)
+axes[0].scatter(holiday_dates, holiday_values, color='orange', s=50, alpha=0.6, 
+                label='Holidays', zorder=5)
 
-ax.legend()
+# Detrended data (residuals)
+axes[1].plot(df['Date'], df['residuals'], linewidth=1.5, alpha=0.7, color='green')
+axes[1].axhline(y=0, color='red', linestyle='--', linewidth=2, alpha=0.5, label='Zero line')
+axes[1].set_xlabel('Date', fontsize=12)
+axes[1].set_ylabel('Residuals (Actual - Trend)', fontsize=12)
+axes[1].set_title('Detrended Data (Residuals)', fontsize=14, fontweight='bold')
+axes[1].grid(True, alpha=0.3)
+axes[1].legend()
+
+# Highlight holidays on residuals
+holiday_residuals = df[df['is_holiday']]['residuals']
+axes[1].scatter(holiday_dates, holiday_residuals, color='orange', s=50, alpha=0.6, 
+                label='Holidays', zorder=5)
+
 plt.tight_layout()
 plt.savefig('plots/01_time_series.png', dpi=300, bbox_inches='tight')
 plt.close()
 print("   Saved: plots/01_time_series.png")
 
-# 4.2 Day of week analysis
+# 5.2 Day of week analysis (raw vs detrended)
 print("\n2. Creating day of week analysis...")
 fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-# Box plot
 day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 df_day = df.copy()
 df_day['day_name'] = pd.Categorical(df_day['day_name'], categories=day_order, ordered=True)
 
-sns.boxplot(data=df_day, x='day_name', y=target_var, ax=axes[0])
-axes[0].set_title('Results by Day of Week', fontweight='bold')
-axes[0].set_xlabel('Day of Week')
-axes[0].set_ylabel('Number of Reported Results')
-axes[0].tick_params(axis='x', rotation=45)
+# Raw data
+day_means_raw = df_day.groupby('day_name')[target_var].mean().reindex(day_order)
+axes[0].bar(range(len(day_means_raw)), day_means_raw.values, color='steelblue', alpha=0.7)
+axes[0].set_xticks(range(len(day_means_raw)))
+axes[0].set_xticklabels(day_means_raw.index, rotation=45)
+axes[0].set_title('Average Results by Day of Week (Raw)', fontweight='bold')
+axes[0].set_ylabel('Average Number of Reported Results')
+axes[0].grid(axis='y', alpha=0.3)
 
-# Mean by day
-day_means = df_day.groupby('day_name')[target_var].mean().reindex(day_order)
-axes[1].bar(range(len(day_means)), day_means.values, color='steelblue', alpha=0.7)
-axes[1].set_xticks(range(len(day_means)))
-axes[1].set_xticklabels(day_means.index, rotation=45)
-axes[1].set_title('Average Results by Day of Week', fontweight='bold')
-axes[1].set_ylabel('Average Number of Reported Results')
+# Detrended data
+day_means_resid = df_day.groupby('day_name')['residuals'].mean().reindex(day_order)
+colors = ['green' if x > 0 else 'red' for x in day_means_resid.values]
+axes[1].bar(range(len(day_means_resid)), day_means_resid.values, color=colors, alpha=0.7)
+axes[1].axhline(y=0, color='black', linestyle='--', linewidth=1, alpha=0.5)
+axes[1].set_xticks(range(len(day_means_resid)))
+axes[1].set_xticklabels(day_means_resid.index, rotation=45)
+axes[1].set_title('Average Residuals by Day of Week (Detrended)', fontweight='bold')
+axes[1].set_ylabel('Average Residuals')
 axes[1].grid(axis='y', alpha=0.3)
 
 plt.tight_layout()
@@ -212,51 +272,55 @@ plt.savefig('plots/02_day_of_week.png', dpi=300, bbox_inches='tight')
 plt.close()
 print("   Saved: plots/02_day_of_week.png")
 
-# 4.3 Month and season analysis
+# 5.3 Month and season analysis (raw vs detrended)
 print("\n3. Creating month and season analysis...")
 fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
-# Month
 month_order = ['January', 'February', 'March', 'April', 'May', 'June',
                'July', 'August', 'September', 'October', 'November', 'December']
 df['month_name'] = df['Date'].dt.month_name()
 df['month_name'] = pd.Categorical(df['month_name'], categories=month_order, ordered=True)
 
-month_means = df.groupby('month_name')[target_var].mean()
-axes[0, 0].bar(range(len(month_means)), month_means.values, color='coral', alpha=0.7)
-axes[0, 0].set_xticks(range(len(month_means)))
-axes[0, 0].set_xticklabels(month_means.index, rotation=45, ha='right')
-axes[0, 0].set_title('Average Results by Month', fontweight='bold')
+# Month - Raw
+month_means_raw = df.groupby('month_name')[target_var].mean()
+axes[0, 0].bar(range(len(month_means_raw)), month_means_raw.values, color='coral', alpha=0.7)
+axes[0, 0].set_xticks(range(len(month_means_raw)))
+axes[0, 0].set_xticklabels(month_means_raw.index, rotation=45, ha='right')
+axes[0, 0].set_title('Average Results by Month (Raw)', fontweight='bold')
 axes[0, 0].set_ylabel('Average Number of Reported Results')
 axes[0, 0].grid(axis='y', alpha=0.3)
 
-# Season
-season_order = ['Spring', 'Summer', 'Fall', 'Winter']
-df['season'] = pd.Categorical(df['season'], categories=season_order, ordered=True)
-season_means = df.groupby('season')[target_var].mean()
-axes[0, 1].bar(range(len(season_means)), season_means.values, color='lightgreen', alpha=0.7)
-axes[0, 1].set_xticks(range(len(season_means)))
-axes[0, 1].set_xticklabels(season_means.index)
-axes[0, 1].set_title('Average Results by Season', fontweight='bold')
-axes[0, 1].set_ylabel('Average Number of Reported Results')
+# Month - Detrended
+month_means_resid = df.groupby('month_name')['residuals'].mean()
+colors = ['green' if x > 0 else 'red' for x in month_means_resid.values]
+axes[0, 1].bar(range(len(month_means_resid)), month_means_resid.values, color=colors, alpha=0.7)
+axes[0, 1].axhline(y=0, color='black', linestyle='--', linewidth=1, alpha=0.5)
+axes[0, 1].set_xticks(range(len(month_means_resid)))
+axes[0, 1].set_xticklabels(month_means_resid.index, rotation=45, ha='right')
+axes[0, 1].set_title('Average Residuals by Month (Detrended)', fontweight='bold')
+axes[0, 1].set_ylabel('Average Residuals')
 axes[0, 1].grid(axis='y', alpha=0.3)
 
-# School period
-school_order = ['Fall Semester', 'Spring Semester', 'Summer Break']
-df['school_period'] = pd.Categorical(df['school_period'], categories=school_order, ordered=True)
-school_means = df.groupby('school_period')[target_var].mean()
-axes[1, 0].bar(range(len(school_means)), school_means.values, color='gold', alpha=0.7)
-axes[1, 0].set_xticks(range(len(school_means)))
-axes[1, 0].set_xticklabels(school_means.index, rotation=15, ha='right')
-axes[1, 0].set_title('Average Results by School Period', fontweight='bold')
+# Season - Raw
+season_order = ['Spring', 'Summer', 'Fall', 'Winter']
+df['season'] = pd.Categorical(df['season'], categories=season_order, ordered=True)
+season_means_raw = df.groupby('season')[target_var].mean()
+axes[1, 0].bar(range(len(season_means_raw)), season_means_raw.values, color='lightgreen', alpha=0.7)
+axes[1, 0].set_xticks(range(len(season_means_raw)))
+axes[1, 0].set_xticklabels(season_means_raw.index)
+axes[1, 0].set_title('Average Results by Season (Raw)', fontweight='bold')
 axes[1, 0].set_ylabel('Average Number of Reported Results')
 axes[1, 0].grid(axis='y', alpha=0.3)
 
-# Weekend vs weekday
-weekend_means = df.groupby('is_weekend')[target_var].mean()
-axes[1, 1].bar(['Weekday', 'Weekend'], weekend_means.values, color='mediumpurple', alpha=0.7)
-axes[1, 1].set_title('Average Results: Weekend vs Weekday', fontweight='bold')
-axes[1, 1].set_ylabel('Average Number of Reported Results')
+# Season - Detrended
+season_means_resid = df.groupby('season')['residuals'].mean()
+colors = ['green' if x > 0 else 'red' for x in season_means_resid.values]
+axes[1, 1].bar(range(len(season_means_resid)), season_means_resid.values, color=colors, alpha=0.7)
+axes[1, 1].axhline(y=0, color='black', linestyle='--', linewidth=1, alpha=0.5)
+axes[1, 1].set_xticks(range(len(season_means_resid)))
+axes[1, 1].set_xticklabels(season_means_resid.index)
+axes[1, 1].set_title('Average Residuals by Season (Detrended)', fontweight='bold')
+axes[1, 1].set_ylabel('Average Residuals')
 axes[1, 1].grid(axis='y', alpha=0.3)
 
 plt.tight_layout()
@@ -264,25 +328,25 @@ plt.savefig('plots/03_month_season.png', dpi=300, bbox_inches='tight')
 plt.close()
 print("   Saved: plots/03_month_season.png")
 
-# 4.4 Holiday analysis
+# 5.4 Holiday analysis (raw vs detrended)
 print("\n4. Creating holiday analysis...")
 fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-# Holiday vs non-holiday
-holiday_means = df.groupby('is_holiday')[target_var].mean()
-axes[0].bar(['Non-Holiday', 'Holiday'], holiday_means.values, color='indianred', alpha=0.7)
-axes[0].set_title('Average Results: Holiday vs Non-Holiday', fontweight='bold')
+# Holiday vs non-holiday - Raw
+holiday_means_raw = df.groupby('is_holiday')[target_var].mean()
+axes[0].bar(['Non-Holiday', 'Holiday'], holiday_means_raw.values, color='indianred', alpha=0.7)
+axes[0].set_title('Average Results: Holiday vs Non-Holiday (Raw)', fontweight='bold')
 axes[0].set_ylabel('Average Number of Reported Results')
 axes[0].grid(axis='y', alpha=0.3)
 
-# Specific holidays
-holiday_data = df[df['is_holiday']].groupby('holiday_name')[target_var].mean().sort_values(ascending=False)
-axes[1].barh(range(len(holiday_data)), holiday_data.values, color='firebrick', alpha=0.7)
-axes[1].set_yticks(range(len(holiday_data)))
-axes[1].set_yticklabels(holiday_data.index)
-axes[1].set_title('Average Results by Holiday', fontweight='bold')
-axes[1].set_xlabel('Average Number of Reported Results')
-axes[1].grid(axis='x', alpha=0.3)
+# Holiday vs non-holiday - Detrended
+holiday_means_resid = df.groupby('is_holiday')['residuals'].mean()
+colors = ['green' if x > 0 else 'red' for x in holiday_means_resid.values]
+axes[1].bar(['Non-Holiday', 'Holiday'], holiday_means_resid.values, color=colors, alpha=0.7)
+axes[1].axhline(y=0, color='black', linestyle='--', linewidth=1, alpha=0.5)
+axes[1].set_title('Average Residuals: Holiday vs Non-Holiday (Detrended)', fontweight='bold')
+axes[1].set_ylabel('Average Residuals')
+axes[1].grid(axis='y', alpha=0.3)
 
 plt.tight_layout()
 plt.savefig('plots/04_holidays.png', dpi=300, bbox_inches='tight')
@@ -326,35 +390,51 @@ plt.savefig('plots/05_day_of_month.png', dpi=300, bbox_inches='tight')
 plt.close()
 print("   Saved: plots/05_day_of_month.png")
 
-# 4.6 Correlation heatmap
+# 5.6 Correlation heatmap (raw vs detrended)
 print("\n6. Creating correlation heatmap...")
 time_vars = [
     'day_of_week', 'month', 'quarter', 'week_of_year', 'day_of_year',
-    'is_weekend', 'is_holiday', 'is_major_holiday', 'days_since_start'
+    'is_weekend', 'is_holiday', 'is_major_holiday'
 ]
-corr_data = df[time_vars + [target_var]].corr()
 
-fig, ax = plt.subplots(figsize=(10, 8))
-sns.heatmap(corr_data, annot=True, fmt='.2f', cmap='coolwarm', center=0,
-            square=True, linewidths=1, cbar_kws={"shrink": 0.8}, ax=ax)
-ax.set_title('Correlation: Time Variables vs Reported Results', fontweight='bold', fontsize=14)
+fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+
+# Raw data correlations
+corr_raw = df[time_vars + [target_var]].corr()
+sns.heatmap(corr_raw, annot=True, fmt='.2f', cmap='coolwarm', center=0,
+            square=True, linewidths=1, cbar_kws={"shrink": 0.8}, ax=axes[0])
+axes[0].set_title('Correlation: Time Variables vs Results (Raw)', fontweight='bold', fontsize=12)
+
+# Detrended data correlations
+corr_resid = df[time_vars + ['residuals']].corr()
+sns.heatmap(corr_resid, annot=True, fmt='.2f', cmap='coolwarm', center=0,
+            square=True, linewidths=1, cbar_kws={"shrink": 0.8}, ax=axes[1])
+axes[1].set_title('Correlation: Time Variables vs Residuals (Detrended)', fontweight='bold', fontsize=12)
+
 plt.tight_layout()
 plt.savefig('plots/06_correlation.png', dpi=300, bbox_inches='tight')
 plt.close()
 print("   Saved: plots/06_correlation.png")
 
 # ============================================================================
-# 5. STATISTICAL SUMMARY
+# 6. STATISTICAL SUMMARY (Raw vs Detrended)
 # ============================================================================
 print("\n" + "=" * 80)
-print("STATISTICAL SUMMARY")
+print("STATISTICAL SUMMARY: RAW vs DETRENDED")
 print("=" * 80)
 
 # Group by different time variables
-print("\n1. BY DAY OF WEEK:")
+print("\n1. BY DAY OF WEEK (Raw vs Detrended):")
 print("-" * 80)
-day_stats = df.groupby('day_name')[target_var].agg(['mean', 'std', 'count']).reindex(day_order)
-print(day_stats.round(0))
+day_stats_raw = df.groupby('day_name')[target_var].agg(['mean', 'std']).reindex(day_order)
+day_stats_resid = df.groupby('day_name')['residuals'].agg(['mean', 'std']).reindex(day_order)
+day_comparison = pd.DataFrame({
+    'Raw_Mean': day_stats_raw['mean'],
+    'Raw_Std': day_stats_raw['std'],
+    'Residual_Mean': day_stats_resid['mean'],
+    'Residual_Std': day_stats_resid['std']
+})
+print(day_comparison.round(0))
 
 print("\n2. BY MONTH:")
 print("-" * 80)
@@ -366,31 +446,58 @@ print("-" * 80)
 season_stats = df.groupby('season')[target_var].agg(['mean', 'std', 'count']).reindex(season_order)
 print(season_stats.round(0))
 
-print("\n4. WEEKEND VS WEEKDAY:")
+print("\n4. WEEKEND VS WEEKDAY (Raw vs Detrended):")
 print("-" * 80)
-weekend_stats = df.groupby('is_weekend')[target_var].agg(['mean', 'std', 'count'])
-weekend_stats.index = ['Weekday', 'Weekend']
-print(weekend_stats.round(0))
+weekend_raw = df.groupby('is_weekend')[target_var].agg(['mean', 'std'])
+weekend_resid = df.groupby('is_weekend')['residuals'].agg(['mean', 'std'])
+weekend_comparison = pd.DataFrame({
+    'Raw_Mean': weekend_raw['mean'],
+    'Raw_Std': weekend_raw['std'],
+    'Residual_Mean': weekend_resid['mean'],
+    'Residual_Std': weekend_resid['std']
+})
+weekend_comparison.index = ['Weekday', 'Weekend']
+print(weekend_comparison.round(0))
 
-print("\n5. HOLIDAY VS NON-HOLIDAY:")
+print("\n5. HOLIDAY VS NON-HOLIDAY (Raw vs Detrended):")
 print("-" * 80)
-holiday_stats = df.groupby('is_holiday')[target_var].agg(['mean', 'std', 'count'])
-holiday_stats.index = ['Non-Holiday', 'Holiday']
-print(holiday_stats.round(0))
+holiday_raw = df.groupby('is_holiday')[target_var].agg(['mean', 'std'])
+holiday_resid = df.groupby('is_holiday')['residuals'].agg(['mean', 'std'])
+holiday_comparison = pd.DataFrame({
+    'Raw_Mean': holiday_raw['mean'],
+    'Raw_Std': holiday_raw['std'],
+    'Residual_Mean': holiday_resid['mean'],
+    'Residual_Std': holiday_resid['std']
+})
+holiday_comparison.index = ['Non-Holiday', 'Holiday']
+print(holiday_comparison.round(0))
 
-print("\n6. TOP 10 HOLIDAYS BY AVERAGE RESULTS:")
+print("\n6. TOP 10 HOLIDAYS BY AVERAGE RESULTS (Raw vs Detrended):")
 print("-" * 80)
-top_holidays = df[df['is_holiday']].groupby('holiday_name')[target_var].mean().sort_values(ascending=False).head(10)
-for holiday, value in top_holidays.items():
-    print(f"  {holiday:30s}: {value:,.0f}")
+holiday_raw_means = df[df['is_holiday']].groupby('holiday_name')[target_var].mean()
+holiday_resid_means = df[df['is_holiday']].groupby('holiday_name')['residuals'].mean()
+holiday_combined = pd.DataFrame({
+    'Raw': holiday_raw_means,
+    'Residual': holiday_resid_means
+}).sort_values('Raw', ascending=False).head(10)
+print(holiday_combined.round(0))
 
-print("\n7. SCHOOL PERIOD:")
+print("\n7. SCHOOL PERIOD (Raw vs Detrended):")
 print("-" * 80)
-school_stats = df.groupby('school_period')[target_var].agg(['mean', 'std', 'count']).reindex(school_order)
-print(school_stats.round(0))
+school_order = ['Fall Semester', 'Spring Semester', 'Summer Break']
+df['school_period'] = pd.Categorical(df['school_period'], categories=school_order, ordered=True)
+school_raw = df.groupby('school_period')[target_var].agg(['mean', 'std'])
+school_resid = df.groupby('school_period')['residuals'].agg(['mean', 'std'])
+school_comparison = pd.DataFrame({
+    'Raw_Mean': school_raw['mean'],
+    'Raw_Std': school_raw['std'],
+    'Residual_Mean': school_resid['mean'],
+    'Residual_Std': school_resid['std']
+})
+print(school_comparison.round(0))
 
 # ============================================================================
-# 6. SAVE ENHANCED DATASET
+# 7. SAVE ENHANCED DATASET
 # ============================================================================
 print("\n" + "=" * 80)
 print("SAVING ENHANCED DATASET")
