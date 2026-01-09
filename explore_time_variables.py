@@ -195,12 +195,284 @@ print("  1. Analyze raw data (trend is part of the story)")
 print("  2. Detrend to see time variable effects after removing trend")
 print("\nProceeding with detrending for comparison, but raw analysis is also valid...")
 
-# Use Gaussian filter for trend (smooth and handles edges well)
-print("\nFitting trend model using Gaussian filter...")
+# Test multiple trend fitting methods
+print("\nTesting multiple trend fitting methods...")
 
-# Gaussian filter with sigma=10 (smooth but not overfitting)
+# Prepare data
+X_time = df['days_since_start'].values
+y = df[target_var].values
+
+# Store all trend models for comparison
+trend_models = {}
+
+# 1. Gaussian filter (current method)
 sigma = 10
-df['trend'] = gaussian_filter1d(df[target_var].values, sigma=sigma)
+trend_gauss = gaussian_filter1d(y, sigma=sigma)
+trend_models['Gaussian Filter (σ=10)'] = trend_gauss
+
+# 2. Splines (piecewise polynomial) - common in literature
+from scipy.interpolate import UnivariateSpline, BSpline, make_interp_spline
+import scipy.interpolate as interp
+
+# Univariate spline with different smoothing
+for s_factor in [500000, 1000000, 2000000, 5000000, 10000000]:
+    try:
+        spline = UnivariateSpline(X_time, y, s=len(df)*s_factor)
+        trend_models[f'Univariate Spline (s={s_factor})'] = spline(X_time)
+    except:
+        pass
+
+# Cubic B-spline - commonly used in literature (as in the other implementation)
+try:
+    # Try different number of knots (control points) - similar to other implementation
+    for n_knots in [8, 10, 12, 15, 20, 25, 30, 40, 50]:
+        try:
+            # Create knot vector (internal knots, excluding endpoints)
+            knots = np.linspace(X_time.min(), X_time.max(), n_knots)
+            # Use internal knots only (exclude first and last for natural spline)
+            internal_knots = knots[1:-1] if len(knots) > 2 else knots
+            
+            # Fit cubic B-spline using splrep/splev (standard approach)
+            tck = interp.splrep(X_time, y, t=internal_knots, k=3, s=0)  # k=3 for cubic, s=0 for interpolation
+            trend_bspline = interp.splev(X_time, tck)
+            
+            # Check for valid values
+            if not np.any(np.isnan(trend_bspline)) and not np.any(np.isinf(trend_bspline)):
+                trend_models[f'Cubic B-Spline ({n_knots} knots)'] = trend_bspline
+        except Exception as e:
+            pass
+except:
+    pass
+
+# Also try sklearn SplineTransformer approach (as in other implementation)
+try:
+    from sklearn.preprocessing import SplineTransformer
+    from sklearn.linear_model import LinearRegression
+    
+    for n_knots in [5, 7, 10, 15, 20, 25, 30, 40, 50]:
+        try:
+            # Use SplineTransformer (same as other implementation)
+            spline_transformer = SplineTransformer(n_knots=n_knots, degree=3, include_bias=True)
+            X_spline_basis = spline_transformer.fit_transform(X_time.reshape(-1, 1))
+            
+            # Fit linear regression on spline basis
+            spline_model = LinearRegression()
+            spline_model.fit(X_spline_basis, y)
+            trend_sklearn_bspline = spline_model.predict(X_spline_basis)
+            
+            if not np.any(np.isnan(trend_sklearn_bspline)) and not np.any(np.isinf(trend_sklearn_bspline)):
+                trend_models[f'Sklearn B-Spline ({n_knots} knots)'] = trend_sklearn_bspline
+        except:
+            pass
+except:
+    pass
+
+# 3. LOESS/LOWESS (Locally Weighted Scatterplot Smoothing) - very common in literature
+# Approximate with weighted local regression
+from scipy.interpolate import interp1d
+try:
+    # Use different interpolation methods as LOESS approximation
+    for kind in ['linear', 'quadratic']:
+        loess_approx = interp1d(X_time, y, kind=kind, fill_value='extrapolate', bounds_error=False)
+        trend_models[f'LOESS-like ({kind})'] = loess_approx(X_time)
+except:
+    pass
+
+# 4. Exponential decay/growth model
+from scipy.optimize import curve_fit
+def exp_decay(x, a, b, c):
+    return a * np.exp(-b * x) + c
+def exp_growth(x, a, b, c):
+    return a * (1 - np.exp(-b * x)) + c
+
+try:
+    popt_decay, _ = curve_fit(exp_decay, X_time, y, maxfev=5000, 
+                              p0=[y.max(), 0.01, y.min()])
+    trend_models['Exponential Decay'] = exp_decay(X_time, *popt_decay)
+except:
+    pass
+
+try:
+    popt_growth, _ = curve_fit(exp_growth, X_time, y, maxfev=5000,
+                               p0=[y.max()-y.min(), 0.01, y.min()])
+    trend_models['Exponential Growth'] = exp_growth(X_time, *popt_growth)
+except:
+    pass
+
+# 5. Logistic/S-curve (common for adoption)
+def logistic(x, a, b, c, d):
+    return a / (1 + np.exp(-b * (x - c))) + d
+
+try:
+    popt_log, _ = curve_fit(logistic, X_time, y, maxfev=5000,
+                            p0=[y.max()-y.min(), 0.01, X_time.mean(), y.min()])
+    trend_models['Logistic/S-Curve'] = logistic(X_time, *popt_log)
+except:
+    pass
+
+# 6. Hodrick-Prescott Filter - common in economics/time series literature
+# HP filter separates trend from cycle
+def hp_filter(y, lamb=1600):  # lambda=1600 for quarterly data, adjust for daily
+    # Simplified HP filter using scipy
+    from scipy import linalg
+    n = len(y)
+    # HP filter matrix
+    A = np.eye(n)
+    for i in range(2, n):
+        A[i, i-2] = lamb
+        A[i, i-1] = -4*lamb
+        A[i, i] = 1 + 6*lamb
+        if i < n-1:
+            A[i, i+1] = -4*lamb
+        if i < n-2:
+            A[i, i+2] = lamb
+    try:
+        trend_hp = linalg.solve(A, y)
+        return trend_hp
+    except:
+        return y
+
+# Try different lambda values (higher = smoother trend)
+for lamb in [100, 400, 1600, 6400]:
+    try:
+        trend_hp = hp_filter(y, lamb=lamb)
+        if not np.any(np.isnan(trend_hp)) and not np.any(np.isinf(trend_hp)):
+            trend_models[f'HP Filter (λ={lamb})'] = trend_hp
+    except:
+        pass
+
+# 7. Exponential Smoothing - common in time series
+# Simple exponential smoothing
+def exp_smoothing(y, alpha=0.3):
+    result = np.zeros_like(y)
+    result[0] = y[0]
+    for i in range(1, len(y)):
+        result[i] = alpha * y[i] + (1 - alpha) * result[i-1]
+    return result
+
+for alpha in [0.1, 0.2, 0.3, 0.4, 0.5]:
+    trend_models[f'Exp Smoothing (α={alpha})'] = exp_smoothing(y, alpha=alpha)
+
+# 8. Savitzky-Golay filter - common for smoothing time series
+from scipy.signal import savgol_filter
+for window in [21, 31, 51]:
+    for poly_order in [2, 3]:
+        try:
+            if window < len(y) and window % 2 == 1:  # window must be odd
+                trend_sg = savgol_filter(y, window_length=window, polyorder=poly_order)
+                trend_models[f'Savitzky-Golay (w={window}, p={poly_order})'] = trend_sg
+        except:
+            pass
+
+# Evaluate all models - focus on residual patterns
+print("\nModel Comparison (evaluating residual patterns):")
+print("-" * 80)
+model_scores = []
+for name, trend in trend_models.items():
+    # Calculate metrics
+    r2 = np.corrcoef(y, trend)[0,1]**2
+    mse = np.mean((y - trend)**2)
+    rmse = np.sqrt(mse)
+    mae = np.mean(np.abs(y - trend))
+    
+    # Check for reasonable values (no NaN, no extreme values)
+    if np.any(np.isnan(trend)) or np.any(np.isinf(trend)):
+        continue
+    if np.any(trend < 0) or np.any(trend > y.max() * 2):
+        continue
+    
+    # Calculate residuals
+    residuals = y - trend
+    
+    # Check for patterns in residuals
+    # 1. Autocorrelation in residuals (should be low for good detrending)
+    if len(residuals) > 10:
+        resid_lag1 = residuals[1:]
+        resid_today = residuals[:-1]
+        resid_autocorr = np.corrcoef(resid_today, resid_lag1)[0,1] if len(resid_today) > 1 else 0
+    else:
+        resid_autocorr = 0
+    
+    # 2. Pattern in first 30 days (start fit quality) - focus on autocorrelation pattern, not magnitude
+    first_30_resid = residuals[:30]
+    if len(first_30_resid) > 5:
+        first_30_lag1 = first_30_resid[1:]
+        first_30_today = first_30_resid[:-1]
+        first_30_autocorr = np.corrcoef(first_30_today, first_30_lag1)[0,1] if len(first_30_today) > 1 else 0
+        first_30_pattern = abs(first_30_autocorr) * 1000  # Focus on pattern, not magnitude
+    else:
+        first_30_pattern = 0
+    
+    # 3. Pattern in last 30 days (end fit quality) - focus on autocorrelation pattern
+    last_30_resid = residuals[-30:]
+    if len(last_30_resid) > 5:
+        last_30_lag1 = last_30_resid[1:]
+        last_30_today = last_30_resid[:-1]
+        last_30_autocorr = np.corrcoef(last_30_today, last_30_lag1)[0,1] if len(last_30_today) > 1 else 0
+        last_30_pattern = abs(last_30_autocorr) * 1000
+    else:
+        last_30_pattern = 0
+    
+    # 4. Trend in residuals (should be close to zero)
+    resid_trend_coef = np.polyfit(range(len(residuals)), residuals, 1)[0] if len(residuals) > 1 else 0
+    
+    # Combined penalty for residual patterns
+    # Prioritize low residual autocorrelation (user wants "residuals to truly have no pattern")
+    # Autocorrelation is the PRIMARY concern - heavily weight it
+    pattern_penalty = (abs(resid_autocorr) * 500000 +  # VERY heavily penalize autocorrelation (primary metric)
+                      first_30_pattern +               # Penalize start autocorrelation patterns
+                      last_30_pattern +                # Penalize end autocorrelation patterns
+                      abs(resid_trend_coef) * 1000)    # Penalize residual trends
+    
+    # Penalize overfitting
+    overfit_penalty = 0
+    if r2 > 0.999:  # Likely overfitting
+        overfit_penalty = (r2 - 0.999) * 100000
+    
+    # Combined score: prioritize models with minimal residual patterns (especially autocorrelation)
+    combined_score = rmse + pattern_penalty + overfit_penalty
+    
+    model_scores.append({
+        'name': name,
+        'r2': r2,
+        'rmse': rmse,
+        'mae': mae,
+        'resid_autocorr': abs(resid_autocorr),
+        'first_30_pattern': first_30_pattern,
+        'combined_score': combined_score,
+        'trend': trend
+    })
+    print(f"{name:30s}: R²={r2:.44f}, RMSE={rmse:,.0f}, Resid_AC={abs(resid_autocorr):.3f}, Start_Pattern={first_30_pattern:,.0f}")
+
+# Exclude overfitting models (R² > 0.999 or interpolation methods) from selection
+reasonable_models = [s for s in model_scores if s['r2'] < 0.999 and 'Interpolation' not in s['name']]
+if len(reasonable_models) == 0:
+    reasonable_models = [s for s in model_scores if s['r2'] < 0.99]  # Fallback
+
+# Sort by combined score (lower is better) - prioritizes models with minimal residual patterns
+reasonable_models.sort(key=lambda x: x['combined_score'])
+print(f"\nBest model (minimizing residual patterns): {reasonable_models[0]['name']}")
+print(f"  R²={reasonable_models[0]['r2']:.4f}, RMSE={reasonable_models[0]['rmse']:,.0f}")
+print(f"  Residual autocorrelation: {reasonable_models[0]['resid_autocorr']:.4f} (lower is better)")
+print(f"  Start pattern score: {reasonable_models[0]['first_30_pattern']:,.0f} (lower is better)")
+
+# Use best reasonable model
+best_trend = reasonable_models[0]['trend']
+df['trend'] = best_trend
+print(f"\nUsing best fit model: {reasonable_models[0]['name']}")
+
+# Verify residual patterns
+residuals = df[target_var] - df['trend']
+resid_lag1 = residuals[1:].values
+resid_today = residuals[:-1].values
+final_autocorr = np.corrcoef(resid_today, resid_lag1)[0,1] if len(resid_today) > 1 else 0
+print(f"\nFinal residual autocorrelation: {final_autocorr:.4f}")
+if abs(final_autocorr) < 0.1:
+    print("  ✓ Good: Residuals show minimal autocorrelation (pattern removed)")
+elif abs(final_autocorr) < 0.3:
+    print("  ⚠ Moderate: Some residual autocorrelation remains")
+else:
+    print("  ✗ Warning: Significant residual autocorrelation (pattern still present)")
 
 # Calculate residuals (detrended data)
 df['residuals'] = df[target_var] - df['trend']
@@ -219,11 +491,175 @@ for lag in [2, 3, 7]:
 
 # Calculate R² for trend
 trend_r2 = np.corrcoef(df[target_var], df['trend'])[0,1]**2
-print(f"Trend model R²: {trend_r2:.4f}")
+print(f"\nSelected trend model R²: {trend_r2:.4f}")
 print(f"Trend explains {trend_r2*100:.2f}% of variance in reported results")
 print(f"Residual std: {df['residuals'].std():,.0f}")
-print(f"Using Gaussian filter with sigma={sigma} for smooth trend")
 print("\n⚠️  Remember: The 'trend' might be the real pattern, not noise!")
+
+# Filter out overfitting models (R² > 0.999) for visualization
+reasonable_models = [s for s in model_scores if s['r2'] < 0.999]
+if len(reasonable_models) == 0:
+    reasonable_models = model_scores[:5]  # Fallback to top 5
+
+# Add residual pattern visualization to comparison
+print("\nAnalyzing residual patterns for top models...")
+# Calculate residuals for top models and check patterns
+top5_with_residuals = []
+for score in reasonable_models[:5]:
+    residuals = y - score['trend']
+    # Check autocorrelation
+    if len(residuals) > 10:
+        resid_lag1 = residuals[1:]
+        resid_today = residuals[:-1]
+        ac = np.corrcoef(resid_today, resid_lag1)[0,1] if len(resid_today) > 1 else 0
+    else:
+        ac = 0
+    # Check start pattern
+    first_30 = residuals[:30]
+    start_pattern = np.abs(np.mean(first_30)) + np.std(first_30)
+    
+    top5_with_residuals.append({
+        'name': score['name'],
+        'trend': score['trend'],
+        'residuals': residuals,
+        'autocorr': abs(ac),
+        'start_pattern': start_pattern,
+        'r2': score['r2'],
+        'rmse': score['rmse']
+    })
+
+# Create comprehensive comparison plot - larger and clearer
+print("\nCreating trend model comparison plot...")
+fig = plt.figure(figsize=(22, 18))
+gs = fig.add_gridspec(5, 3, hspace=0.35, wspace=0.3)
+
+# Plot 1: Top 5 models - full time series (larger)
+ax1 = fig.add_subplot(gs[0, :])
+ax1.plot(df['Date'], df[target_var], 'k-', linewidth=3, alpha=0.6, label='Actual Data', zorder=1)
+colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
+for i, model_info in enumerate(top5_with_residuals):
+    ax1.plot(df['Date'], model_info['trend'], linewidth=2.5, alpha=0.9,
+            label=f"{model_info['name']} (R²={model_info['r2']:.3f}, AC={model_info['autocorr']:.3f})", 
+            color=colors[i], zorder=2)
+ax1.set_title('Top 5 Trend Models - Full Time Series', fontweight='bold', fontsize=16)
+ax1.set_xlabel('Date', fontsize=12)
+ax1.set_ylabel('Number of Reported Results', fontsize=12)
+ax1.legend(fontsize=10, loc='upper right')
+ax1.grid(True, alpha=0.3)
+
+# Plot 2: Zoom on start (first 60 days) - larger
+ax2 = fig.add_subplot(gs[1, :])
+first_60 = df.head(60)
+ax2.plot(first_60['Date'], first_60[target_var], 'k-', linewidth=3, alpha=0.6, 
+        label='Actual Data', zorder=1)
+for i, model_info in enumerate(top5_with_residuals):
+    ax2.plot(first_60['Date'], model_info['trend'][:60], linewidth=2.5, alpha=0.9,
+            label=f"{model_info['name']}", color=colors[i], zorder=2)
+ax2.set_title('Zoom: First 60 Days (Check Start Fit)', fontweight='bold', fontsize=16)
+ax2.set_xlabel('Date', fontsize=12)
+ax2.set_ylabel('Number of Reported Results', fontsize=12)
+ax2.legend(fontsize=10)
+ax2.grid(True, alpha=0.3)
+
+# Plot 3: Residuals comparison (top 5) - larger
+ax3 = fig.add_subplot(gs[2, :])
+for i, model_info in enumerate(top5_with_residuals):
+    ax3.plot(df['Date'], model_info['residuals'], linewidth=2, alpha=0.8,
+            label=f"{model_info['name']} (AC={model_info['autocorr']:.3f})", color=colors[i])
+ax3.axhline(y=0, color='black', linestyle='--', linewidth=2, alpha=0.5)
+ax3.set_title('Residuals: Top 5 Models (Lower Autocorr = Less Pattern)', fontweight='bold', fontsize=16)
+ax3.set_xlabel('Date', fontsize=12)
+ax3.set_ylabel('Residuals', fontsize=12)
+ax3.legend(fontsize=10)
+ax3.grid(True, alpha=0.3)
+
+# Plot 4: Residual autocorrelation scatter (check for patterns)
+ax4 = fig.add_subplot(gs[3, 0])
+for i, model_info in enumerate(top5_with_residuals):
+    resid = model_info['residuals']
+    if len(resid) > 1:
+        resid_yesterday = resid[:-1]
+        resid_today = resid[1:]
+        ax4.scatter(resid_yesterday, resid_today, alpha=0.6, s=20, 
+                   color=colors[i], label=model_info['name'][:20])
+ax4.axhline(y=0, color='black', linestyle='--', linewidth=1, alpha=0.3)
+ax4.axvline(x=0, color='black', linestyle='--', linewidth=1, alpha=0.3)
+ax4.set_xlabel("Yesterday's Residual", fontsize=11)
+ax4.set_ylabel("Today's Residual", fontsize=11)
+ax4.set_title('Residual Autocorrelation (No Pattern = Random)', fontweight='bold', fontsize=13)
+ax4.legend(fontsize=8)
+ax4.grid(True, alpha=0.3)
+
+# Plot 5: Residuals at start (first 60 days)
+ax5 = fig.add_subplot(gs[3, 1:])
+for i, model_info in enumerate(top5_with_residuals):
+    first_60_resid = model_info['residuals'][:60]
+    ax5.plot(first_60['Date'], first_60_resid, linewidth=2, alpha=0.8,
+            label=f"{model_info['name']} (Pattern={model_info['start_pattern']:,.0f})", 
+            color=colors[i])
+ax5.axhline(y=0, color='black', linestyle='--', linewidth=2, alpha=0.5)
+ax5.set_title('Residuals at Start (First 60 Days) - Lower Pattern Score = Better', 
+              fontweight='bold', fontsize=14)
+ax5.set_xlabel('Date', fontsize=12)
+ax5.set_ylabel('Residuals', fontsize=12)
+ax5.legend(fontsize=9)
+ax5.grid(True, alpha=0.3)
+
+# Plot 6: Autocorrelation comparison (lower is better - less pattern)
+ax6 = fig.add_subplot(gs[4, 0])
+top10 = reasonable_models[:10]
+model_names_short = [s['name'][:20] + '...' if len(s['name']) > 20 else s['name'] for s in top10]
+# Calculate autocorr for top 10
+autocorr_scores = []
+for score in top10:
+    residuals = y - score['trend']
+    if len(residuals) > 1:
+        resid_lag1 = residuals[1:]
+        resid_today = residuals[:-1]
+        ac = abs(np.corrcoef(resid_today, resid_lag1)[0,1]) if len(resid_today) > 1 else 1
+    else:
+        ac = 1
+    autocorr_scores.append(ac)
+ax6.barh(range(len(top10)), autocorr_scores, color=colors[:len(top10)], alpha=0.7, edgecolor='black')
+ax6.set_yticks(range(len(top10)))
+ax6.set_yticklabels(model_names_short, fontsize=9)
+ax6.set_xlabel('|Autocorrelation| (Lower = Less Pattern)', fontsize=11)
+ax6.set_title('Residual Autocorrelation', fontweight='bold', fontsize=13)
+ax6.grid(axis='x', alpha=0.3)
+ax6.axvline(x=0.1, color='green', linestyle='--', linewidth=1, alpha=0.5, label='Good (<0.1)')
+ax6.axvline(x=0.3, color='orange', linestyle='--', linewidth=1, alpha=0.5, label='Moderate (<0.3)')
+ax6.legend(fontsize=8)
+
+# Plot 7: Start pattern score (lower is better)
+ax7 = fig.add_subplot(gs[4, 1])
+start_pattern_scores = []
+for score in top10:
+    residuals = y - score['trend']
+    first_30 = residuals[:30]
+    pattern = np.abs(np.mean(first_30)) + np.std(first_30)
+    start_pattern_scores.append(pattern)
+ax7.barh(range(len(top10)), start_pattern_scores, color=colors[:len(top10)], alpha=0.7, edgecolor='black')
+ax7.set_yticks(range(len(top10)))
+ax7.set_yticklabels(model_names_short, fontsize=9)
+ax7.set_xlabel('Start Pattern Score (Lower = Better Fit)', fontsize=11)
+ax7.set_title('Start Fit Quality', fontweight='bold', fontsize=13)
+ax7.grid(axis='x', alpha=0.3)
+
+# Plot 8: Combined score (RMSE + pattern penalties)
+ax8 = fig.add_subplot(gs[4, 2])
+combined_scores = [s['combined_score'] for s in top10]
+ax8.barh(range(len(top10)), combined_scores, color=colors[:len(top10)], alpha=0.7, edgecolor='black')
+ax8.set_yticks(range(len(top10)))
+ax8.set_yticklabels(model_names_short, fontsize=9)
+ax8.set_xlabel('Combined Score (Lower = Better)', fontsize=11)
+ax8.set_title('Overall Score (RMSE + Pattern Penalties)', fontweight='bold', fontsize=13)
+ax8.grid(axis='x', alpha=0.3)
+
+plt.suptitle('Trend Model Comparison - Best Fits for Time Series', 
+             fontsize=18, fontweight='bold', y=0.995)
+plt.savefig('plots/00_trend_model_comparison.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("   Saved: plots/00_trend_model_comparison.png")
 
 # ============================================================================
 # 4. EXPLORATORY ANALYSIS
