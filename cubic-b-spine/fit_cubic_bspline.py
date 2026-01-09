@@ -9,6 +9,8 @@ import matplotlib.pyplot as plt
 from sklearn.preprocessing import SplineTransformer
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score, mean_squared_error
+from scipy.optimize import curve_fit
+from scipy.stats import lognorm
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -40,7 +42,7 @@ y = df['reported_scores'].values
 print(f"\nTime range: {X.min()} to {X.max()} days")
 
 # Try different numbers of knots (less than 10, fewer is better)
-n_knots_options = [3, 4, 5, 6, 7, 8, 9]
+n_knots_options = [2]
 best_r2 = -np.inf
 best_model = None
 best_transformer = None
@@ -99,6 +101,193 @@ df['base_residuals'] = df['reported_scores'] - df['cubic_bspline_fit']
 df['base_residuals_pct'] = np.where(df['cubic_bspline_fit'] != 0,
                                      (df['base_residuals'] / df['cubic_bspline_fit']) * 100,
                                      np.nan)
+
+# ============================================================================
+# LOGNORMAL CURVE FITTING
+# ============================================================================
+
+print("\n" + "="*80)
+print("LOGNORMAL CURVE FITTING")
+print("="*80)
+
+# For lognormal fitting, we model log(y) as a function of time
+# Then y = exp(f(time)) where f is the fitted function
+
+# Ensure we only use positive values (required for lognormal)
+y_positive = y[y > 0]
+X_positive = X[y > 0, 0]
+df_positive = df[df['reported_scores'] > 0].copy()
+
+print(f"\nUsing {len(y_positive)} positive values out of {len(y)} total")
+
+# Method 1: Fit log(y) as a polynomial function of time
+print("\n" + "-"*80)
+print("Method 1: Polynomial fit to log(y) vs time")
+print("-"*80)
+
+log_y = np.log(y_positive)
+X_poly = X_positive
+
+# Try different polynomial degrees
+best_lognorm_r2 = -np.inf
+best_lognorm_predictions = None
+best_lognorm_degree = None
+
+for degree in [2, 3, 4, 5, 6]:
+    try:
+        # Fit polynomial to log(y)
+        coeffs = np.polyfit(X_poly, log_y, degree)
+        poly_func = np.poly1d(coeffs)
+        log_predictions = poly_func(X_poly)
+        
+        # Transform back: predictions = exp(log_predictions)
+        predictions = np.exp(log_predictions)
+        
+        # Calculate R² on original scale
+        r2 = r2_score(y_positive, predictions)
+        
+        if r2 > best_lognorm_r2:
+            best_lognorm_r2 = r2
+            best_lognorm_predictions = predictions
+            best_lognorm_degree = degree
+            best_lognorm_coeffs = coeffs
+            
+    except Exception as e:
+        continue
+
+# Extend predictions to full dataset
+full_lognorm_predictions = np.zeros(len(df))
+full_lognorm_predictions[df['reported_scores'] > 0] = best_lognorm_predictions
+# For zero or negative values, use the mean or a small value
+if len(best_lognorm_predictions) > 0:
+    full_lognorm_predictions[df['reported_scores'] <= 0] = np.mean(best_lognorm_predictions)
+
+print(f"Best polynomial degree: {best_lognorm_degree}")
+print(f"  R² = {r2_score(df['reported_scores'], full_lognorm_predictions):.4f}")
+print(f"  RMSE = {np.sqrt(mean_squared_error(df['reported_scores'], full_lognorm_predictions)):.2f}")
+print(f"  MAE = {np.mean(np.abs(df['reported_scores'] - full_lognorm_predictions)):.2f}")
+
+# Method 2: Fit a parametric lognormal curve
+# Use a time-varying mean: log(y) = a + b*t + c*t^2 + ... + error
+print("\n" + "-"*80)
+print("Method 2: Parametric lognormal with exponential decay")
+print("-"*80)
+
+def lognormal_curve(t, a, b, c):
+    """
+    Lognormal curve: y = a * exp(b*t + c*t^2)
+    This models log(y) = log(a) + b*t + c*t^2
+    """
+    return a * np.exp(b * t + c * t**2)
+
+def lognormal_curve_decay(t, a, b, c, d):
+    """
+    Lognormal with decay: y = a * exp(b*t + c*t^2 + d*t^3)
+    """
+    return a * np.exp(b * t + c * t**2 + d * t**3)
+
+# Normalize time for better numerical stability
+X_norm = (X_positive - X_positive.min()) / (X_positive.max() - X_positive.min() + 1e-10)
+
+try:
+    # Initial parameter guess
+    initial_guess = [np.mean(y_positive), -0.01, -0.0001]
+    popt, pcov = curve_fit(lognormal_curve, X_norm, y_positive, 
+                          p0=initial_guess, maxfev=5000)
+    
+    # Predictions
+    X_full_norm = (X[:, 0] - X[:, 0].min()) / (X[:, 0].max() - X[:, 0].min() + 1e-10)
+    lognormal_predictions = lognormal_curve(X_full_norm, *popt)
+    
+    lognormal_r2 = r2_score(df['reported_scores'], lognormal_predictions)
+    lognormal_rmse = np.sqrt(mean_squared_error(df['reported_scores'], lognormal_predictions))
+    lognormal_mae = np.mean(np.abs(df['reported_scores'] - lognormal_predictions))
+    
+    print(f"Lognormal curve (quadratic):")
+    print(f"  Parameters: a={popt[0]:.2f}, b={popt[1]:.4f}, c={popt[2]:.6f}")
+    print(f"  R² = {lognormal_r2:.4f}")
+    print(f"  RMSE = {lognormal_rmse:.2f}")
+    print(f"  MAE = {lognormal_mae:.2f}")
+    
+except Exception as e:
+    print(f"Fitting failed: {str(e)}")
+    lognormal_predictions = None
+    lognormal_r2 = -np.inf
+
+# Try with cubic term
+try:
+    initial_guess_cubic = [np.mean(y_positive), -0.01, -0.0001, 0.00001]
+    popt_cubic, pcov_cubic = curve_fit(lognormal_curve_decay, X_norm, y_positive,
+                                       p0=initial_guess_cubic, maxfev=5000)
+    
+    X_full_norm = (X[:, 0] - X[:, 0].min()) / (X[:, 0].max() - X[:, 0].min() + 1e-10)
+    lognormal_predictions_cubic = lognormal_curve_decay(X_full_norm, *popt_cubic)
+    
+    lognormal_r2_cubic = r2_score(df['reported_scores'], lognormal_predictions_cubic)
+    lognormal_rmse_cubic = np.sqrt(mean_squared_error(df['reported_scores'], lognormal_predictions_cubic))
+    lognormal_mae_cubic = np.mean(np.abs(df['reported_scores'] - lognormal_predictions_cubic))
+    
+    print(f"\nLognormal curve (cubic):")
+    print(f"  Parameters: a={popt_cubic[0]:.2f}, b={popt_cubic[1]:.4f}, c={popt_cubic[2]:.6f}, d={popt_cubic[3]:.8f}")
+    print(f"  R² = {lognormal_r2_cubic:.4f}")
+    print(f"  RMSE = {lognormal_rmse_cubic:.2f}")
+    print(f"  MAE = {lognormal_mae_cubic:.2f}")
+    
+    # Use cubic if better
+    if lognormal_r2_cubic > lognormal_r2:
+        lognormal_predictions = lognormal_predictions_cubic
+        lognormal_r2 = lognormal_r2_cubic
+        lognormal_rmse = lognormal_rmse_cubic
+        lognormal_mae = lognormal_mae_cubic
+        best_lognormal_params = popt_cubic
+        best_lognormal_type = "cubic"
+    else:
+        best_lognormal_params = popt
+        best_lognormal_type = "quadratic"
+        
+except Exception as e:
+    print(f"Cubic fitting failed: {str(e)}")
+    if lognormal_predictions is None:
+        best_lognormal_params = None
+        best_lognormal_type = None
+
+# Compare polynomial vs parametric and use the best
+poly_r2_full = r2_score(df['reported_scores'], full_lognorm_predictions)
+poly_rmse_full = np.sqrt(mean_squared_error(df['reported_scores'], full_lognorm_predictions))
+poly_mae_full = np.mean(np.abs(df['reported_scores'] - full_lognorm_predictions))
+
+# Compare methods and use the best
+if lognormal_predictions is not None:
+    if poly_r2_full > lognormal_r2:
+        # Polynomial is better
+        df['lognormal_fit'] = full_lognorm_predictions
+        lognormal_r2 = poly_r2_full
+        lognormal_rmse = poly_rmse_full
+        lognormal_mae = poly_mae_full
+        best_lognormal_type = f"polynomial (degree {best_lognorm_degree})"
+        print(f"\nPolynomial method is better, using it instead of parametric")
+    else:
+        # Parametric is better
+        df['lognormal_fit'] = lognormal_predictions
+        print(f"\nParametric method is better")
+else:
+    # Use polynomial method if parametric failed
+    df['lognormal_fit'] = full_lognorm_predictions
+    lognormal_r2 = poly_r2_full
+    lognormal_rmse = poly_rmse_full
+    lognormal_mae = poly_mae_full
+    best_lognormal_type = f"polynomial (degree {best_lognorm_degree})"
+
+# Store residuals
+df['lognormal_residuals'] = df['reported_scores'] - df['lognormal_fit']
+df['lognormal_residuals_pct'] = np.where(df['lognormal_fit'] != 0,
+                                         (df['lognormal_residuals'] / df['lognormal_fit']) * 100,
+                                         np.nan)
+
+print(f"\nBest lognormal model: {best_lognormal_type}")
+print(f"  R² = {lognormal_r2:.4f}")
+print(f"  RMSE = {lognormal_rmse:.2f}")
+print(f"  MAE = {lognormal_mae:.2f}")
 
 # ============================================================================
 # ADD DAY-OF-WEEK EFFECTS
@@ -203,13 +392,15 @@ print("="*80)
 comparison = pd.DataFrame({
     'Model': [
         'Base (Cubic B-Spline only)',
+        'Lognormal Curve',
         'Additive (Base + Day-of-Week)',
         'Multiplicative (Base * Day-of-Week)'
     ],
-    'R²': [best_r2, additive_r2, multiplicative_r2],
-    'RMSE': [best_rmse, additive_rmse, multiplicative_rmse],
+    'R²': [best_r2, lognormal_r2, additive_r2, multiplicative_r2],
+    'RMSE': [best_rmse, lognormal_rmse, additive_rmse, multiplicative_rmse],
     'MAE': [
         np.mean(np.abs(df['base_residuals'])),
+        lognormal_mae,
         additive_mae,
         multiplicative_mae
     ]
@@ -235,11 +426,14 @@ print("="*80)
 
 fig = plt.figure(figsize=(20, 16))
 
-# 1. All three models comparison
+# 1. All models comparison including lognormal
 ax1 = plt.subplot(3, 3, 1)
 ax1.plot(df['Date'], df['reported_scores'], 'ko', markersize=1.5, alpha=0.3, label='Data')
 ax1.plot(df['Date'], df['cubic_bspline_fit'], 'b-', linewidth=2, 
          label=f'Base (R²={best_r2:.4f})', alpha=0.8)
+if 'lognormal_fit' in df.columns:
+    ax1.plot(df['Date'], df['lognormal_fit'], 'm-', linewidth=2, 
+             label=f'Lognormal (R²={lognormal_r2:.4f})', alpha=0.8)
 ax1.plot(df['Date'], df['additive_fit'], 'g-', linewidth=2, 
          label=f'Additive (R²={additive_r2:.4f})', alpha=0.8)
 ax1.plot(df['Date'], df['multiplicative_fit'], 'r-', linewidth=2, 
@@ -247,7 +441,7 @@ ax1.plot(df['Date'], df['multiplicative_fit'], 'r-', linewidth=2,
 ax1.set_title('Model Comparison: All Fits', fontsize=14, fontweight='bold')
 ax1.set_xlabel('Date')
 ax1.set_ylabel('Number of Reported Scores')
-ax1.legend(fontsize=9)
+ax1.legend(fontsize=8)
 ax1.grid(True, alpha=0.3)
 ax1.tick_params(axis='x', rotation=45)
 
@@ -281,17 +475,19 @@ ax4.set_ylabel('Residual (%)')
 ax4.grid(True, alpha=0.3)
 ax4.tick_params(axis='x', rotation=45)
 
-# 5. Percentage residual distributions comparison
+# 5. Lognormal model percentage residuals (if available)
 ax5 = plt.subplot(3, 3, 5)
-ax5.hist(df['base_residuals_pct'], bins=30, alpha=0.5, label='Base', color='blue', density=True)
-ax5.hist(df['additive_residuals_pct'], bins=30, alpha=0.5, label='Additive', color='green', density=True)
-ax5.hist(df['multiplicative_residuals_pct'], bins=30, alpha=0.5, label='Multiplicative', color='red', density=True)
-ax5.axvline(x=0, color='black', linestyle='--', linewidth=1, alpha=0.5)
-ax5.set_title('Percentage Residual Distributions', fontsize=14, fontweight='bold')
-ax5.set_xlabel('Residual (%)')
-ax5.set_ylabel('Density')
-ax5.legend()
-ax5.grid(True, alpha=0.3, axis='y')
+if 'lognormal_residuals_pct' in df.columns:
+    ax5.plot(df['Date'], df['lognormal_residuals_pct'], 'm-', linewidth=1, alpha=0.7)
+    ax5.axhline(y=0, color='r', linestyle='--', linewidth=1, alpha=0.5)
+    ax5.set_title(f'Lognormal Model Residuals % (R²={lognormal_r2:.4f})', fontsize=14, fontweight='bold')
+else:
+    ax5.text(0.5, 0.5, 'Lognormal\nModel Failed', ha='center', va='center', transform=ax5.transAxes)
+    ax5.set_title('Lognormal Model Residuals %', fontsize=14, fontweight='bold')
+ax5.set_xlabel('Date')
+ax5.set_ylabel('Residual (%)')
+ax5.grid(True, alpha=0.3)
+ax5.tick_params(axis='x', rotation=45)
 
 # 6. Day-of-week effects (additive)
 ax6 = plt.subplot(3, 3, 6)
@@ -323,60 +519,58 @@ for i, (bar, val) in enumerate(zip(bars, dow_factors.values)):
     ax7.text(bar.get_x() + bar.get_width()/2, val + (max(dow_factors.values) - 1) * 0.02 if val > 1 else -(1 - min(dow_factors.values)) * 0.02, 
              f'{val:.3f}', ha='center', va='bottom' if val > 1 else 'top', fontsize=8)
 
-# 8. Metrics comparison bar chart
+# 8. Percentage residual distributions comparison
 ax8 = plt.subplot(3, 3, 8)
-x = np.arange(3)
-width = 0.25
-models = ['Base', 'Additive', 'Multiplicative']
-r2_values = [best_r2, additive_r2, multiplicative_r2]
-rmse_values = [best_rmse, additive_rmse, multiplicative_rmse]
+ax8.hist(df['base_residuals_pct'].dropna(), bins=30, alpha=0.4, label='Base', color='blue', density=True)
+if 'lognormal_residuals_pct' in df.columns:
+    ax8.hist(df['lognormal_residuals_pct'].dropna(), bins=30, alpha=0.4, label='Lognormal', color='magenta', density=True)
+ax8.hist(df['additive_residuals_pct'].dropna(), bins=30, alpha=0.4, label='Additive', color='green', density=True)
+ax8.hist(df['multiplicative_residuals_pct'].dropna(), bins=30, alpha=0.4, label='Multiplicative', color='red', density=True)
+ax8.axvline(x=0, color='black', linestyle='--', linewidth=1, alpha=0.5)
+ax8.set_title('Percentage Residual Distributions', fontsize=14, fontweight='bold')
+ax8.set_xlabel('Residual (%)')
+ax8.set_ylabel('Density')
+ax8.legend(fontsize=8)
+ax8.grid(True, alpha=0.3, axis='y')
+
+# 9. Metrics comparison bar chart
+ax9 = plt.subplot(3, 3, 9)
+x = np.arange(4)
+width = 0.2
+models = ['Base', 'Lognormal', 'Additive', 'Multiplicative']
+r2_values = [best_r2, lognormal_r2, additive_r2, multiplicative_r2]
+rmse_values = [best_rmse, lognormal_rmse, additive_rmse, multiplicative_rmse]
 # Normalize RMSE for visualization (divide by max)
 rmse_norm = [v / max(rmse_values) for v in rmse_values]
 
-bars1 = ax8.bar(x - width, r2_values, width, label='R²', alpha=0.8)
-bars2 = ax8.bar(x, rmse_norm, width, label='RMSE (normalized)', alpha=0.8)
-ax8.set_title('Model Metrics Comparison', fontsize=14, fontweight='bold')
-ax8.set_xlabel('Model')
-ax8.set_ylabel('Value (normalized)')
-ax8.set_xticks(x)
-ax8.set_xticklabels(models)
-ax8.legend()
-ax8.grid(True, alpha=0.3, axis='y')
-# Add value labels
-for bars in [bars1, bars2]:
-    for bar in bars:
-        height = bar.get_height()
-        ax8.text(bar.get_x() + bar.get_width()/2., height,
-                f'{height:.3f}', ha='center', va='bottom', fontsize=7)
-
-# 9. Zoomed view of fits (first 100 points)
-ax9 = plt.subplot(3, 3, 9)
-subset_idx = slice(0, 100)
-ax9.plot(df['Date'].iloc[subset_idx], df['reported_scores'].iloc[subset_idx], 
-         'ko', markersize=3, alpha=0.5, label='Data')
-ax9.plot(df['Date'].iloc[subset_idx], df['cubic_bspline_fit'].iloc[subset_idx], 
-         'b-', linewidth=2, label='Base', alpha=0.8)
-ax9.plot(df['Date'].iloc[subset_idx], df['additive_fit'].iloc[subset_idx], 
-         'g-', linewidth=2, label='Additive', alpha=0.8)
-ax9.plot(df['Date'].iloc[subset_idx], df['multiplicative_fit'].iloc[subset_idx], 
-         'r-', linewidth=2, label='Multiplicative', alpha=0.8)
-ax9.set_title('Zoomed View: First 100 Points', fontsize=14, fontweight='bold')
-ax9.set_xlabel('Date')
-ax9.set_ylabel('Number of Reported Scores')
+bars1 = ax9.bar(x - width/2, r2_values, width, label='R²', alpha=0.8)
+bars2 = ax9.bar(x + width/2, rmse_norm, width, label='RMSE (normalized)', alpha=0.8)
+ax9.set_title('Model Metrics Comparison', fontsize=14, fontweight='bold')
+ax9.set_xlabel('Model')
+ax9.set_ylabel('Value')
+ax9.set_xticks(x)
+ax9.set_xticklabels(models, rotation=45, ha='right')
 ax9.legend(fontsize=8)
-ax9.grid(True, alpha=0.3)
-ax9.tick_params(axis='x', rotation=45)
+ax9.grid(True, alpha=0.3, axis='y')
+# Add value labels for R²
+for i, bar in enumerate(bars1):
+    height = bar.get_height()
+    ax9.text(bar.get_x() + bar.get_width()/2., height,
+            f'{height:.3f}', ha='center', va='bottom', fontsize=7)
 
 plt.tight_layout()
 plt.savefig('cubic_bspline_with_dow_comparison.png', dpi=300, bbox_inches='tight')
 print("\nVisualization saved to 'cubic_bspline_with_dow_comparison.png'")
 
 # Save results
-output_df = df[['Date', 'day_name', 'reported_scores', 
-                'cubic_bspline_fit', 'base_residuals', 'base_residuals_pct',
-                'additive_fit', 'additive_residuals', 'additive_residuals_pct',
-                'multiplicative_fit', 'multiplicative_residuals', 'multiplicative_residuals_pct',
-                'dow_effect', 'dow_factor']].copy()
+output_cols = ['Date', 'day_name', 'reported_scores', 
+               'cubic_bspline_fit', 'base_residuals', 'base_residuals_pct',
+               'additive_fit', 'additive_residuals', 'additive_residuals_pct',
+               'multiplicative_fit', 'multiplicative_residuals', 'multiplicative_residuals_pct',
+               'dow_effect', 'dow_factor']
+if 'lognormal_fit' in df.columns:
+    output_cols.extend(['lognormal_fit', 'lognormal_residuals', 'lognormal_residuals_pct'])
+output_df = df[output_cols].copy()
 output_df.to_csv('cubic_bspline_with_dow_results.csv', index=False)
 print("Results saved to 'cubic_bspline_with_dow_results.csv'")
 
@@ -426,6 +620,18 @@ print(f"  Mean: {df['multiplicative_residuals_pct'].mean():.2f}%")
 print(f"  Std Dev: {df['multiplicative_residuals_pct'].std():.2f}%")
 print(f"  Min: {df['multiplicative_residuals_pct'].min():.2f}%")
 print(f"  Max: {df['multiplicative_residuals_pct'].max():.2f}%")
+
+if 'lognormal_fit' in df.columns:
+    print("\nLognormal Model Residuals:")
+    print(f"  Mean: {df['lognormal_residuals'].mean():.2f}")
+    print(f"  Std Dev: {df['lognormal_residuals'].std():.2f}")
+    print(f"  Min: {df['lognormal_residuals'].min():.2f}")
+    print(f"  Max: {df['lognormal_residuals'].max():.2f}")
+    print(f"\nLognormal Model Percentage Residuals:")
+    print(f"  Mean: {df['lognormal_residuals_pct'].mean():.2f}%")
+    print(f"  Std Dev: {df['lognormal_residuals_pct'].std():.2f}%")
+    print(f"  Min: {df['lognormal_residuals_pct'].min():.2f}%")
+    print(f"  Max: {df['lognormal_residuals_pct'].max():.2f}%")
 
 print("\n" + "="*80)
 print("ANALYSIS COMPLETE")
