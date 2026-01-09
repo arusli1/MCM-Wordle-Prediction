@@ -1,0 +1,48 @@
+{
+  "base_model": {
+    "type": "Cubic B-Spline (minimal piecewise)",
+    "n_knots": 3,
+    "n_segments": 2,
+    "r2": 0.8613312219440291,
+    "rmse": 33197.88761955913,
+    "mae": 21640.331520886783,
+    "residual_std": 33244.22105120586,
+    "residual_autocorr": 0.9229996279077326
+  },
+  "full_model": {
+    "type": "Cubic B-Spline + Day-of-Week Mixed (Multiplicative + Additive)",
+    "formula": "prediction = trend * day_factor + day_effect",
+    "n_knots": 3,
+    "n_segments": 2,
+    "r2": 0.7803953829977014,
+    "rmse": 41777.441468603196,
+    "mae": 27627.339255175422,
+    "residual_std": 41835.69619920819,
+    "residual_autocorr": 0.48607354919079043
+  },
+  "improvement": {
+    "r2_improvement": -0.08093583894632772,
+    "r2_improvement_pct": -9.396598762977048,
+    "rmse_reduction_pct": -25.843673993249105,
+    "mae_reduction_pct": -27.665970498234323,
+    "residual_std_reduction_pct": -25.843514681149966
+  },
+  "day_of_week_factors": {
+    "Monday": 0.9815199858123785,
+    "Tuesday": 1.0777615834087046,
+    "Wednesday": 1.765137141650964,
+    "Thursday": 0.6443109539893688,
+    "Friday": 0.7981081647658971,
+    "Saturday": 0.8219377617864465,
+    "Sunday": 0.9112244085862401
+  },
+  "day_of_week_effects": {
+    "Monday": 483.6343933476508,
+    "Tuesday": -5124.133766221823,
+    "Wednesday": -65161.14178531197,
+    "Thursday": 34128.56104275524,
+    "Friday": 18097.067956222112,
+    "Saturday": 13312.833317176051,
+    "Sunday": 4263.178842032733
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "base_model": {
+    "type": "Exponential Growth-Then-Decay",
+    "breakpoint_day": 27.999773301281266,
+    "parameters": {
+      "x0": 27.999773301281266,
+      "a1": 130800.1736627139,
+      "b1": 0.040372851790433685,
+      "a2": 322835.9183916925,
+      "b2": 0.0177550147554295,
+      "c": 23357.742384926692
+    },
+    "r2": 0.9820062165186579,
+    "rmse": 11958.65539588115,
+    "mae": 6754.799442896936
+  },
+  "full_model": {
+    "type": "Growth-Then-Decay + Day-of-Week (Multiplicative)",
+    "r2": 0.9828259586729449,
+    "rmse": 11683.080199811477,
+    "mae": 6664.203308498007,
+    "day_of_week_factors": {
+      "Monday": 1.0015713817743295,
+      "Tuesday": 1.0142770215616026,
+      "Wednesday": 1.0124760996280142,
+      "Thursday": 1.006639134316763,
+      "Friday": 1.0157923279343715,
+      "Saturday": 0.9766411365259846,
+      "Sunday": 0.9726028982589352
+    }
+  },
+  "march_1_2023_prediction": {
+    "date": "2023-03-01",
+    "day_of_week": "Wednesday",
+    "base_trend": 23675.0,
+    "day_factor": 1.0124760996280142,
+    "point_estimate": 23970.371658693235,
+    "prediction_interval_95": {
+      "lower": 1072.6576523248914,
+      "upper": 46868.085665061575
+    },
+    "residual_std": 11682.507146106298
+  },
+  "improvement": {
+    "r2_improvement": 0.0008197421542869288,
+    "r2_improvement_pct": 0.08347626934511913,
+    "rmse_reduction_pct": 2.3043995076953827,
+    "mae_reduction_pct": 1.3412113144853823
+  }
+}
