@@ -94,6 +94,11 @@ print(f"MAE = {np.mean(np.abs(y - best_predictions)):.2f}")
 # Store base model results
 df['cubic_bspline_fit'] = best_predictions
 df['base_residuals'] = df['reported_scores'] - df['cubic_bspline_fit']
+# Calculate percentage residuals: (actual - predicted) / predicted * 100
+# Avoid division by zero
+df['base_residuals_pct'] = np.where(df['cubic_bspline_fit'] != 0,
+                                     (df['base_residuals'] / df['cubic_bspline_fit']) * 100,
+                                     np.nan)
 
 # ============================================================================
 # ADD DAY-OF-WEEK EFFECTS
@@ -132,6 +137,10 @@ for day in day_order:
 df['dow_effect'] = df['day_name'].map(dow_effects)
 df['additive_fit'] = df['cubic_bspline_fit'] + df['dow_effect']
 df['additive_residuals'] = df['reported_scores'] - df['additive_fit']
+# Calculate percentage residuals
+df['additive_residuals_pct'] = np.where(df['additive_fit'] != 0,
+                                        (df['additive_residuals'] / df['additive_fit']) * 100,
+                                        np.nan)
 
 # Calculate metrics for additive model
 additive_r2 = r2_score(df['reported_scores'], df['additive_fit'])
@@ -166,6 +175,10 @@ for day in day_order:
 df['dow_factor'] = df['day_name'].map(dow_factors)
 df['multiplicative_fit'] = df['cubic_bspline_fit'] * df['dow_factor']
 df['multiplicative_residuals'] = df['reported_scores'] - df['multiplicative_fit']
+# Calculate percentage residuals
+df['multiplicative_residuals_pct'] = np.where(df['multiplicative_fit'] != 0,
+                                               (df['multiplicative_residuals'] / df['multiplicative_fit']) * 100,
+                                               np.nan)
 
 # Calculate metrics for multiplicative model
 multiplicative_r2 = r2_score(df['reported_scores'], df['multiplicative_fit'])
@@ -238,44 +251,44 @@ ax1.legend(fontsize=9)
 ax1.grid(True, alpha=0.3)
 ax1.tick_params(axis='x', rotation=45)
 
-# 2. Base model residuals
+# 2. Base model percentage residuals
 ax2 = plt.subplot(3, 3, 2)
-ax2.plot(df['Date'], df['base_residuals'], 'b-', linewidth=1, alpha=0.7)
+ax2.plot(df['Date'], df['base_residuals_pct'], 'b-', linewidth=1, alpha=0.7)
 ax2.axhline(y=0, color='r', linestyle='--', linewidth=1, alpha=0.5)
-ax2.set_title(f'Base Model Residuals (R²={best_r2:.4f})', fontsize=14, fontweight='bold')
+ax2.set_title(f'Base Model Residuals % (R²={best_r2:.4f})', fontsize=14, fontweight='bold')
 ax2.set_xlabel('Date')
-ax2.set_ylabel('Residual')
+ax2.set_ylabel('Residual (%)')
 ax2.grid(True, alpha=0.3)
 ax2.tick_params(axis='x', rotation=45)
 
-# 3. Additive model residuals
+# 3. Additive model percentage residuals
 ax3 = plt.subplot(3, 3, 3)
-ax3.plot(df['Date'], df['additive_residuals'], 'g-', linewidth=1, alpha=0.7)
+ax3.plot(df['Date'], df['additive_residuals_pct'], 'g-', linewidth=1, alpha=0.7)
 ax3.axhline(y=0, color='r', linestyle='--', linewidth=1, alpha=0.5)
-ax3.set_title(f'Additive Model Residuals (R²={additive_r2:.4f})', fontsize=14, fontweight='bold')
+ax3.set_title(f'Additive Model Residuals % (R²={additive_r2:.4f})', fontsize=14, fontweight='bold')
 ax3.set_xlabel('Date')
-ax3.set_ylabel('Residual')
+ax3.set_ylabel('Residual (%)')
 ax3.grid(True, alpha=0.3)
 ax3.tick_params(axis='x', rotation=45)
 
-# 4. Multiplicative model residuals
+# 4. Multiplicative model percentage residuals
 ax4 = plt.subplot(3, 3, 4)
-ax4.plot(df['Date'], df['multiplicative_residuals'], 'r-', linewidth=1, alpha=0.7)
+ax4.plot(df['Date'], df['multiplicative_residuals_pct'], 'r-', linewidth=1, alpha=0.7)
 ax4.axhline(y=0, color='r', linestyle='--', linewidth=1, alpha=0.5)
-ax4.set_title(f'Multiplicative Model Residuals (R²={multiplicative_r2:.4f})', fontsize=14, fontweight='bold')
+ax4.set_title(f'Multiplicative Model Residuals % (R²={multiplicative_r2:.4f})', fontsize=14, fontweight='bold')
 ax4.set_xlabel('Date')
-ax4.set_ylabel('Residual')
+ax4.set_ylabel('Residual (%)')
 ax4.grid(True, alpha=0.3)
 ax4.tick_params(axis='x', rotation=45)
 
-# 5. Residual distributions comparison
+# 5. Percentage residual distributions comparison
 ax5 = plt.subplot(3, 3, 5)
-ax5.hist(df['base_residuals'], bins=30, alpha=0.5, label='Base', color='blue', density=True)
-ax5.hist(df['additive_residuals'], bins=30, alpha=0.5, label='Additive', color='green', density=True)
-ax5.hist(df['multiplicative_residuals'], bins=30, alpha=0.5, label='Multiplicative', color='red', density=True)
+ax5.hist(df['base_residuals_pct'], bins=30, alpha=0.5, label='Base', color='blue', density=True)
+ax5.hist(df['additive_residuals_pct'], bins=30, alpha=0.5, label='Additive', color='green', density=True)
+ax5.hist(df['multiplicative_residuals_pct'], bins=30, alpha=0.5, label='Multiplicative', color='red', density=True)
 ax5.axvline(x=0, color='black', linestyle='--', linewidth=1, alpha=0.5)
-ax5.set_title('Residual Distributions Comparison', fontsize=14, fontweight='bold')
-ax5.set_xlabel('Residual')
+ax5.set_title('Percentage Residual Distributions', fontsize=14, fontweight='bold')
+ax5.set_xlabel('Residual (%)')
 ax5.set_ylabel('Density')
 ax5.legend()
 ax5.grid(True, alpha=0.3, axis='y')
@@ -360,9 +373,9 @@ print("\nVisualization saved to 'cubic_bspline_with_dow_comparison.png'")
 
 # Save results
 output_df = df[['Date', 'day_name', 'reported_scores', 
-                'cubic_bspline_fit', 'base_residuals',
-                'additive_fit', 'additive_residuals',
-                'multiplicative_fit', 'multiplicative_residuals',
+                'cubic_bspline_fit', 'base_residuals', 'base_residuals_pct',
+                'additive_fit', 'additive_residuals', 'additive_residuals_pct',
+                'multiplicative_fit', 'multiplicative_residuals', 'multiplicative_residuals_pct',
                 'dow_effect', 'dow_factor']].copy()
 output_df.to_csv('cubic_bspline_with_dow_results.csv', index=False)
 print("Results saved to 'cubic_bspline_with_dow_results.csv'")
@@ -386,18 +399,33 @@ print(f"  Mean: {df['base_residuals'].mean():.2f}")
 print(f"  Std Dev: {df['base_residuals'].std():.2f}")
 print(f"  Min: {df['base_residuals'].min():.2f}")
 print(f"  Max: {df['base_residuals'].max():.2f}")
+print(f"\nBase Model Percentage Residuals:")
+print(f"  Mean: {df['base_residuals_pct'].mean():.2f}%")
+print(f"  Std Dev: {df['base_residuals_pct'].std():.2f}%")
+print(f"  Min: {df['base_residuals_pct'].min():.2f}%")
+print(f"  Max: {df['base_residuals_pct'].max():.2f}%")
 
 print("\nAdditive Model Residuals:")
 print(f"  Mean: {df['additive_residuals'].mean():.2f}")
 print(f"  Std Dev: {df['additive_residuals'].std():.2f}")
 print(f"  Min: {df['additive_residuals'].min():.2f}")
 print(f"  Max: {df['additive_residuals'].max():.2f}")
+print(f"\nAdditive Model Percentage Residuals:")
+print(f"  Mean: {df['additive_residuals_pct'].mean():.2f}%")
+print(f"  Std Dev: {df['additive_residuals_pct'].std():.2f}%")
+print(f"  Min: {df['additive_residuals_pct'].min():.2f}%")
+print(f"  Max: {df['additive_residuals_pct'].max():.2f}%")
 
 print("\nMultiplicative Model Residuals:")
 print(f"  Mean: {df['multiplicative_residuals'].mean():.2f}")
 print(f"  Std Dev: {df['multiplicative_residuals'].std():.2f}")
 print(f"  Min: {df['multiplicative_residuals'].min():.2f}")
 print(f"  Max: {df['multiplicative_residuals'].max():.2f}")
+print(f"\nMultiplicative Model Percentage Residuals:")
+print(f"  Mean: {df['multiplicative_residuals_pct'].mean():.2f}%")
+print(f"  Std Dev: {df['multiplicative_residuals_pct'].std():.2f}%")
+print(f"  Min: {df['multiplicative_residuals_pct'].min():.2f}%")
+print(f"  Max: {df['multiplicative_residuals_pct'].max():.2f}%")
 
 print("\n" + "="*80)
 print("ANALYSIS COMPLETE")
