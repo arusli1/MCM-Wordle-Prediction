@@ -9,9 +9,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime, timedelta
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score
+from scipy.ndimage import gaussian_filter1d
+from scipy import stats
+from scipy.stats import ttest_ind, f_oneway, mannwhitneyu
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -137,36 +137,41 @@ for holiday, dates in holidays_dict.items():
         df.loc[mask, 'days_from_holiday'] = (df.loc[mask, 'Date'] - holiday_date).dt.days
 
 # ============================================================================
-# 3. DETREND DATA (Remove overall time trend)
+# 3. OPTIONAL: DETREND DATA (Remove overall time trend)
 # ============================================================================
 print("\n" + "=" * 80)
-print("DETRENDING DATA")
+print("OPTIONAL DETRENDING")
 print("=" * 80)
 
 target_var = 'Number of  reported results'
 
-# Fit polynomial trend (degree 3 for flexibility)
-print("\nFitting trend model...")
+# Note: The "trend" might actually be the real Wordle popularity pattern
+# Detrending is optional - you can analyze raw data and just control for time
+print("\nNote: The overall time pattern (trend) might be the real Wordle popularity")
+print("      pattern, not noise to remove. Detrending is optional.")
+print("\nOptions:")
+print("  1. Analyze raw data (trend is part of the story)")
+print("  2. Detrend to see time variable effects after removing trend")
+print("\nProceeding with detrending for comparison, but raw analysis is also valid...")
 
-# Create numeric time variable
-X_trend = df['days_since_start'].values.reshape(-1, 1)
-y = df[target_var].values
+# Use Gaussian filter for trend (smooth and handles edges well)
+print("\nFitting trend model using Gaussian filter...")
 
-# Fit polynomial trend
-poly = PolynomialFeatures(degree=3)
-X_poly = poly.fit_transform(X_trend)
-trend_model = LinearRegression()
-trend_model.fit(X_poly, y)
-df['trend'] = trend_model.predict(X_poly)
+# Gaussian filter with sigma=10 (smooth but not overfitting)
+sigma = 10
+df['trend'] = gaussian_filter1d(df[target_var].values, sigma=sigma)
 
 # Calculate residuals (detrended data)
 df['residuals'] = df[target_var] - df['trend']
 df['residuals_pct'] = (df['residuals'] / df['trend'] * 100)  # Percentage deviation from trend
 
 # Calculate R² for trend
-trend_r2 = r2_score(y, df['trend'])
+trend_r2 = np.corrcoef(df[target_var], df['trend'])[0,1]**2
 print(f"Trend model R²: {trend_r2:.4f}")
 print(f"Trend explains {trend_r2*100:.2f}% of variance in reported results")
+print(f"Residual std: {df['residuals'].std():,.0f}")
+print(f"Using Gaussian filter with sigma={sigma} for smooth trend")
+print("\n⚠️  Remember: The 'trend' might be the real pattern, not noise!")
 
 # ============================================================================
 # 4. EXPLORATORY ANALYSIS
@@ -201,16 +206,61 @@ print("=" * 80)
 import os
 os.makedirs('plots', exist_ok=True)
 
-# 5.1 Time series plot with trend
-print("\n1. Creating time series plot with trend...")
-fig, axes = plt.subplots(2, 1, figsize=(14, 10))
+# Helper functions for statistical tests
+def test_significance(group1, group2, name="Comparison"):
+    """Perform t-test and return results"""
+    try:
+        # T-test (assumes normal distribution)
+        t_stat, p_value = ttest_ind(group1, group2, equal_var=False)
+        
+        # Also try Mann-Whitney U test (non-parametric, more robust)
+        u_stat, p_value_mw = mannwhitneyu(group1, group2, alternative='two-sided')
+        
+        # Use the more conservative p-value
+        p_value_final = max(p_value, p_value_mw)
+        
+        # Determine significance
+        if p_value_final < 0.001:
+            sig = "***"
+            sig_text = "Highly Significant (p<0.001)"
+        elif p_value_final < 0.01:
+            sig = "**"
+            sig_text = "Very Significant (p<0.01)"
+        elif p_value_final < 0.05:
+            sig = "*"
+            sig_text = "Significant (p<0.05)"
+        elif p_value_final < 0.1:
+            sig = "."
+            sig_text = "Marginally Significant (p<0.1)"
+        else:
+            sig = "ns"
+            sig_text = "Not Significant (p≥0.1)"
+        
+        return {
+            't_stat': t_stat,
+            'p_value': p_value_final,
+            'sig': sig,
+            'sig_text': sig_text,
+            'mean_diff': group1.mean() - group2.mean()
+        }
+    except Exception as e:
+        return {
+            't_stat': np.nan,
+            'p_value': np.nan,
+            'sig': 'error',
+            'sig_text': f'Error: {str(e)}',
+            'mean_diff': group1.mean() - group2.mean()
+        }
 
-# Raw data with trend
-axes[0].plot(df['Date'], df[target_var], linewidth=1.5, alpha=0.7, label='Actual', color='steelblue')
-axes[0].plot(df['Date'], df['trend'], linewidth=2, alpha=0.8, label='Trend', color='red', linestyle='--')
+# 5.1 Time series plot - show both raw and detrended
+print("\n1. Creating time series plot...")
+fig, axes = plt.subplots(3, 1, figsize=(14, 12))
+
+# Raw data only (no detrending)
+axes[0].plot(df['Date'], df[target_var], linewidth=2, alpha=0.8, label='Actual', color='steelblue')
 axes[0].set_xlabel('Date', fontsize=12)
 axes[0].set_ylabel('Number of Reported Results', fontsize=12)
-axes[0].set_title('Wordle Results Over Time (with Trend)', fontsize=14, fontweight='bold')
+axes[0].set_title('Raw Data (No Detrending - Trend is Part of the Story)', fontsize=14, fontweight='bold')
 axes[0].grid(True, alpha=0.3)
 axes[0].legend()
 
@@ -220,18 +270,27 @@ holiday_values = df[df['is_holiday']][target_var]
 axes[0].scatter(holiday_dates, holiday_values, color='orange', s=50, alpha=0.6, 
                 label='Holidays', zorder=5)
 
-# Detrended data (residuals)
-axes[1].plot(df['Date'], df['residuals'], linewidth=1.5, alpha=0.7, color='green')
-axes[1].axhline(y=0, color='red', linestyle='--', linewidth=2, alpha=0.5, label='Zero line')
+# Raw data with trend overlay
+axes[1].plot(df['Date'], df[target_var], linewidth=1.5, alpha=0.7, label='Actual', color='steelblue')
+axes[1].plot(df['Date'], df['trend'], linewidth=2, alpha=0.8, label='Estimated Trend', color='red', linestyle='--')
 axes[1].set_xlabel('Date', fontsize=12)
-axes[1].set_ylabel('Residuals (Actual - Trend)', fontsize=12)
-axes[1].set_title('Detrended Data (Residuals)', fontsize=14, fontweight='bold')
+axes[1].set_ylabel('Number of Reported Results', fontsize=12)
+axes[1].set_title('Raw Data with Estimated Trend Overlay', fontsize=14, fontweight='bold')
 axes[1].grid(True, alpha=0.3)
 axes[1].legend()
 
+# Detrended data (residuals) - optional view
+axes[2].plot(df['Date'], df['residuals'], linewidth=1.5, alpha=0.7, color='green')
+axes[2].axhline(y=0, color='red', linestyle='--', linewidth=2, alpha=0.5, label='Zero line')
+axes[2].set_xlabel('Date', fontsize=12)
+axes[2].set_ylabel('Residuals (Actual - Trend)', fontsize=12)
+axes[2].set_title('Detrended Data (Residuals) - Optional View', fontsize=14, fontweight='bold')
+axes[2].grid(True, alpha=0.3)
+axes[2].legend()
+
 # Highlight holidays on residuals
 holiday_residuals = df[df['is_holiday']]['residuals']
-axes[1].scatter(holiday_dates, holiday_residuals, color='orange', s=50, alpha=0.6, 
+axes[2].scatter(holiday_dates, holiday_residuals, color='orange', s=50, alpha=0.6, 
                 label='Holidays', zorder=5)
 
 plt.tight_layout()
@@ -249,23 +308,50 @@ df_day['day_name'] = pd.Categorical(df_day['day_name'], categories=day_order, or
 
 # Raw data
 day_means_raw = df_day.groupby('day_name')[target_var].mean().reindex(day_order)
-axes[0].bar(range(len(day_means_raw)), day_means_raw.values, color='steelblue', alpha=0.7)
+day_stds_raw = df_day.groupby('day_name')[target_var].std().reindex(day_order)
+bars0 = axes[0].bar(range(len(day_means_raw)), day_means_raw.values, color='steelblue', alpha=0.7, 
+                    yerr=day_stds_raw.values, capsize=5, edgecolor='black')
 axes[0].set_xticks(range(len(day_means_raw)))
 axes[0].set_xticklabels(day_means_raw.index, rotation=45)
-axes[0].set_title('Average Results by Day of Week (Raw)', fontweight='bold')
+axes[0].set_title('Average Results by Day of Week (Raw) ±1 SD', fontweight='bold')
 axes[0].set_ylabel('Average Number of Reported Results')
 axes[0].grid(axis='y', alpha=0.3)
 
-# Detrended data
+# Detrended data with significance
 day_means_resid = df_day.groupby('day_name')['residuals'].mean().reindex(day_order)
+day_stds_resid = df_day.groupby('day_name')['residuals'].std().reindex(day_order)
 colors = ['green' if x > 0 else 'red' for x in day_means_resid.values]
-axes[1].bar(range(len(day_means_resid)), day_means_resid.values, color=colors, alpha=0.7)
+bars1 = axes[1].bar(range(len(day_means_resid)), day_means_resid.values, color=colors, alpha=0.7,
+                    yerr=day_stds_resid.values, capsize=5, edgecolor='black')
 axes[1].axhline(y=0, color='black', linestyle='--', linewidth=1, alpha=0.5)
 axes[1].set_xticks(range(len(day_means_resid)))
 axes[1].set_xticklabels(day_means_resid.index, rotation=45)
-axes[1].set_title('Average Residuals by Day of Week (Detrended)', fontweight='bold')
+axes[1].set_title('Average Residuals by Day of Week (Detrended) ±1 SD', fontweight='bold')
 axes[1].set_ylabel('Average Residuals')
 axes[1].grid(axis='y', alpha=0.3)
+
+# Add significance indicators (compare each day to overall mean)
+overall_mean_resid = df['residuals'].mean()
+for i, day in enumerate(day_order):
+    day_data = df_day[df_day['day_name'] == day]['residuals']
+    if len(day_data) > 0:
+        # T-test against zero (or overall mean)
+        t_stat, p_val = stats.ttest_1samp(day_data, 0)
+        if p_val < 0.001:
+            sig = '***'
+        elif p_val < 0.01:
+            sig = '**'
+        elif p_val < 0.05:
+            sig = '*'
+        elif p_val < 0.1:
+            sig = '.'
+        else:
+            sig = ''
+        
+        if sig:
+            height = day_means_resid.iloc[i]
+            axes[1].text(i, height + day_stds_resid.iloc[i] + 2000, sig, 
+                        ha='center', fontsize=12, fontweight='bold')
 
 plt.tight_layout()
 plt.savefig('plots/02_day_of_week.png', dpi=300, bbox_inches='tight')
@@ -334,19 +420,37 @@ fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
 # Holiday vs non-holiday - Raw
 holiday_means_raw = df.groupby('is_holiday')[target_var].mean()
-axes[0].bar(['Non-Holiday', 'Holiday'], holiday_means_raw.values, color='indianred', alpha=0.7)
-axes[0].set_title('Average Results: Holiday vs Non-Holiday (Raw)', fontweight='bold')
+holiday_stds_raw = df.groupby('is_holiday')[target_var].std()
+bars0 = axes[0].bar(['Non-Holiday', 'Holiday'], holiday_means_raw.values, 
+                    color='indianred', alpha=0.7, yerr=holiday_stds_raw.values, 
+                    capsize=5, edgecolor='black')
+axes[0].set_title('Average Results: Holiday vs Non-Holiday (Raw) ±1 SD', fontweight='bold')
 axes[0].set_ylabel('Average Number of Reported Results')
 axes[0].grid(axis='y', alpha=0.3)
 
+# Test significance and add marker
+test = test_significance(df[~df['is_holiday']][target_var], df[df['is_holiday']][target_var])
+if test['sig'] != 'ns':
+    axes[0].text(0.5, max(holiday_means_raw.values) + holiday_stds_raw.max() * 0.1, 
+                test['sig'], ha='center', fontsize=14, fontweight='bold')
+
 # Holiday vs non-holiday - Detrended
 holiday_means_resid = df.groupby('is_holiday')['residuals'].mean()
+holiday_stds_resid = df.groupby('is_holiday')['residuals'].std()
 colors = ['green' if x > 0 else 'red' for x in holiday_means_resid.values]
-axes[1].bar(['Non-Holiday', 'Holiday'], holiday_means_resid.values, color=colors, alpha=0.7)
+bars1 = axes[1].bar(['Non-Holiday', 'Holiday'], holiday_means_resid.values, 
+                    color=colors, alpha=0.7, yerr=holiday_stds_resid.values,
+                    capsize=5, edgecolor='black')
 axes[1].axhline(y=0, color='black', linestyle='--', linewidth=1, alpha=0.5)
-axes[1].set_title('Average Residuals: Holiday vs Non-Holiday (Detrended)', fontweight='bold')
+axes[1].set_title('Average Residuals: Holiday vs Non-Holiday (Detrended) ±1 SD', fontweight='bold')
 axes[1].set_ylabel('Average Residuals')
 axes[1].grid(axis='y', alpha=0.3)
+
+# Test significance and add marker
+test = test_significance(df[~df['is_holiday']]['residuals'], df[df['is_holiday']]['residuals'])
+if test['sig'] != 'ns':
+    axes[1].text(0.5, max(holiday_means_resid.values) + holiday_stds_resid.max() * 0.1, 
+                test['sig'], ha='center', fontsize=14, fontweight='bold')
 
 plt.tight_layout()
 plt.savefig('plots/04_holidays.png', dpi=300, bbox_inches='tight')
@@ -417,7 +521,208 @@ plt.close()
 print("   Saved: plots/06_correlation.png")
 
 # ============================================================================
-# 6. STATISTICAL SUMMARY (Raw vs Detrended)
+# 6. STATISTICAL SIGNIFICANCE TESTS
+# ============================================================================
+print("\n" + "=" * 80)
+print("STATISTICAL SIGNIFICANCE TESTS")
+print("=" * 80)
+
+def test_significance(group1, group2, name="Comparison"):
+    """Perform t-test and return results"""
+    try:
+        # T-test (assumes normal distribution)
+        t_stat, p_value = ttest_ind(group1, group2, equal_var=False)
+        
+        # Also try Mann-Whitney U test (non-parametric, more robust)
+        u_stat, p_value_mw = mannwhitneyu(group1, group2, alternative='two-sided')
+        
+        # Use the more conservative p-value
+        p_value_final = max(p_value, p_value_mw)
+        
+        # Determine significance
+        if p_value_final < 0.001:
+            sig = "***"
+            sig_text = "Highly Significant (p<0.001)"
+        elif p_value_final < 0.01:
+            sig = "**"
+            sig_text = "Very Significant (p<0.01)"
+        elif p_value_final < 0.05:
+            sig = "*"
+            sig_text = "Significant (p<0.05)"
+        elif p_value_final < 0.1:
+            sig = "."
+            sig_text = "Marginally Significant (p<0.1)"
+        else:
+            sig = "ns"
+            sig_text = "Not Significant (p≥0.1)"
+        
+        return {
+            't_stat': t_stat,
+            'p_value': p_value_final,
+            'sig': sig,
+            'sig_text': sig_text,
+            'mean_diff': group1.mean() - group2.mean()
+        }
+    except Exception as e:
+        return {
+            't_stat': np.nan,
+            'p_value': np.nan,
+            'sig': 'error',
+            'sig_text': f'Error: {str(e)}',
+            'mean_diff': group1.mean() - group2.mean()
+        }
+
+def anova_test(groups_dict, name="ANOVA"):
+    """Perform one-way ANOVA test"""
+    try:
+        groups = [g for g in groups_dict.values() if len(g) > 0]
+        if len(groups) < 2:
+            return {'f_stat': np.nan, 'p_value': np.nan, 'sig': 'ns', 'sig_text': 'Not enough groups'}
+        
+        f_stat, p_value = f_oneway(*groups)
+        
+        if p_value < 0.001:
+            sig = "***"
+            sig_text = "Highly Significant (p<0.001)"
+        elif p_value < 0.01:
+            sig = "**"
+            sig_text = "Very Significant (p<0.01)"
+        elif p_value < 0.05:
+            sig = "*"
+            sig_text = "Significant (p<0.05)"
+        elif p_value < 0.1:
+            sig = "."
+            sig_text = "Marginally Significant (p<0.1)"
+        else:
+            sig = "ns"
+            sig_text = "Not Significant (p≥0.1)"
+        
+        return {
+            'f_stat': f_stat,
+            'p_value': p_value,
+            'sig': sig,
+            'sig_text': sig_text
+        }
+    except Exception as e:
+        return {'f_stat': np.nan, 'p_value': np.nan, 'sig': 'error', 'sig_text': f'Error: {str(e)}'}
+
+print("\n1. WEEKEND VS WEEKDAY:")
+print("-" * 80)
+weekday_raw = df[~df['is_weekend']][target_var]
+weekend_raw = df[df['is_weekend']][target_var]
+weekday_resid = df[~df['is_weekend']]['residuals']
+weekend_resid = df[df['is_weekend']]['residuals']
+
+test_raw = test_significance(weekday_raw, weekend_raw, "Weekday vs Weekend (Raw)")
+test_resid = test_significance(weekday_resid, weekend_resid, "Weekday vs Weekend (Detrended)")
+
+print(f"Raw Data:")
+print(f"  Mean difference: {test_raw['mean_diff']:,.0f}")
+print(f"  T-statistic: {test_raw['t_stat']:.3f}")
+print(f"  P-value: {test_raw['p_value']:.4f} {test_raw['sig']}")
+print(f"  {test_raw['sig_text']}")
+
+print(f"\nDetrended Data:")
+print(f"  Mean difference: {test_resid['mean_diff']:,.0f}")
+print(f"  T-statistic: {test_resid['t_stat']:.3f}")
+print(f"  P-value: {test_resid['p_value']:.4f} {test_resid['sig']}")
+print(f"  {test_resid['sig_text']}")
+
+print("\n2. HOLIDAY VS NON-HOLIDAY:")
+print("-" * 80)
+non_holiday_raw = df[~df['is_holiday']][target_var]
+holiday_raw = df[df['is_holiday']][target_var]
+non_holiday_resid = df[~df['is_holiday']]['residuals']
+holiday_resid = df[df['is_holiday']]['residuals']
+
+test_raw = test_significance(non_holiday_raw, holiday_raw, "Non-Holiday vs Holiday (Raw)")
+test_resid = test_significance(non_holiday_resid, holiday_resid, "Non-Holiday vs Holiday (Detrended)")
+
+print(f"Raw Data:")
+print(f"  Mean difference: {test_raw['mean_diff']:,.0f}")
+print(f"  T-statistic: {test_raw['t_stat']:.3f}")
+print(f"  P-value: {test_raw['p_value']:.4f} {test_raw['sig']}")
+print(f"  {test_raw['sig_text']}")
+
+print(f"\nDetrended Data:")
+print(f"  Mean difference: {test_resid['mean_diff']:,.0f}")
+print(f"  T-statistic: {test_resid['t_stat']:.3f}")
+print(f"  P-value: {test_resid['p_value']:.4f} {test_resid['sig']}")
+print(f"  {test_resid['sig_text']}")
+
+print("\n3. DAY OF WEEK (ANOVA):")
+print("-" * 80)
+day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+day_groups_raw = {day: df[df['day_name'] == day][target_var] for day in day_order}
+day_groups_resid = {day: df[df['day_name'] == day]['residuals'] for day in day_order}
+
+anova_raw = anova_test(day_groups_raw, "Day of Week (Raw)")
+anova_resid = anova_test(day_groups_resid, "Day of Week (Detrended)")
+
+print(f"Raw Data:")
+print(f"  F-statistic: {anova_raw['f_stat']:.3f}")
+print(f"  P-value: {anova_raw['p_value']:.4f} {anova_raw['sig']}")
+print(f"  {anova_raw['sig_text']}")
+
+print(f"\nDetrended Data:")
+print(f"  F-statistic: {anova_resid['f_stat']:.3f}")
+print(f"  P-value: {anova_resid['p_value']:.4f} {anova_resid['sig']}")
+print(f"  {anova_resid['sig_text']}")
+
+# Pairwise comparisons for day of week (if ANOVA is significant)
+if anova_resid['p_value'] < 0.05:
+    print(f"\n  Pairwise comparisons (Detrended) - significant differences:")
+    from itertools import combinations
+    for day1, day2 in combinations(day_order, 2):
+        test = test_significance(day_groups_resid[day1], day_groups_resid[day2], f"{day1} vs {day2}")
+        if test['p_value'] < 0.05:
+            print(f"    {day1} vs {day2}: p={test['p_value']:.4f} {test['sig']} (diff={test['mean_diff']:,.0f})")
+
+print("\n4. MONTH (ANOVA):")
+print("-" * 80)
+month_order = ['January', 'February', 'March', 'April', 'May', 'June',
+               'July', 'August', 'September', 'October', 'November', 'December']
+month_groups_raw = {month: df[df['month_name'] == month][target_var] for month in month_order if month in df['month_name'].values}
+month_groups_resid = {month: df[df['month_name'] == month]['residuals'] for month in month_order if month in df['month_name'].values}
+
+anova_raw = anova_test(month_groups_raw, "Month (Raw)")
+anova_resid = anova_test(month_groups_resid, "Month (Detrended)")
+
+print(f"Raw Data:")
+print(f"  F-statistic: {anova_raw['f_stat']:.3f}")
+print(f"  P-value: {anova_raw['p_value']:.4f} {anova_raw['sig']}")
+print(f"  {anova_raw['sig_text']}")
+
+print(f"\nDetrended Data:")
+print(f"  F-statistic: {anova_resid['f_stat']:.3f}")
+print(f"  P-value: {anova_resid['p_value']:.4f} {anova_resid['sig']}")
+print(f"  {anova_resid['sig_text']}")
+
+print("\n5. SEASON (ANOVA):")
+print("-" * 80)
+season_order = ['Spring', 'Summer', 'Fall', 'Winter']
+season_groups_raw = {season: df[df['season'] == season][target_var] for season in season_order}
+season_groups_resid = {season: df[df['season'] == season]['residuals'] for season in season_order}
+
+anova_raw = anova_test(season_groups_raw, "Season (Raw)")
+anova_resid = anova_test(season_groups_resid, "Season (Detrended)")
+
+print(f"Raw Data:")
+print(f"  F-statistic: {anova_raw['f_stat']:.3f}")
+print(f"  P-value: {anova_raw['p_value']:.4f} {anova_raw['sig']}")
+print(f"  {anova_raw['sig_text']}")
+
+print(f"\nDetrended Data:")
+print(f"  F-statistic: {anova_resid['f_stat']:.3f}")
+print(f"  P-value: {anova_resid['p_value']:.4f} {anova_resid['sig']}")
+print(f"  {anova_resid['sig_text']}")
+
+print("\n" + "=" * 80)
+print("NOTE: Significance levels: *** p<0.001, ** p<0.01, * p<0.05, . p<0.1, ns p≥0.1")
+print("=" * 80)
+
+# ============================================================================
+# 7. STATISTICAL SUMMARY (Raw vs Detrended)
 # ============================================================================
 print("\n" + "=" * 80)
 print("STATISTICAL SUMMARY: RAW vs DETRENDED")
@@ -497,7 +802,300 @@ school_comparison = pd.DataFrame({
 print(school_comparison.round(0))
 
 # ============================================================================
-# 7. SAVE ENHANCED DATASET
+# 7. ADDITIONAL COMPREHENSIVE ANALYSES
+# ============================================================================
+print("\n" + "=" * 80)
+print("ADDITIONAL COMPREHENSIVE ANALYSES")
+print("=" * 80)
+
+# 7.1 Distribution analysis
+print("\n7.1 Creating distribution analysis...")
+fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+# Raw data distribution
+axes[0, 0].hist(df[target_var], bins=50, alpha=0.7, color='steelblue', edgecolor='black')
+axes[0, 0].axvline(df[target_var].mean(), color='red', linestyle='--', linewidth=2, label=f'Mean: {df[target_var].mean():,.0f}')
+axes[0, 0].axvline(df[target_var].median(), color='green', linestyle='--', linewidth=2, label=f'Median: {df[target_var].median():,.0f}')
+axes[0, 0].set_title('Distribution of Reported Results (Raw)', fontweight='bold')
+axes[0, 0].set_xlabel('Number of Reported Results')
+axes[0, 0].set_ylabel('Frequency')
+axes[0, 0].legend()
+axes[0, 0].grid(True, alpha=0.3)
+
+# Residuals distribution
+axes[0, 1].hist(df['residuals'], bins=50, alpha=0.7, color='green', edgecolor='black')
+axes[0, 1].axvline(0, color='red', linestyle='--', linewidth=2, label='Zero')
+axes[0, 1].axvline(df['residuals'].mean(), color='orange', linestyle='--', linewidth=2, label=f'Mean: {df["residuals"].mean():.0f}')
+axes[0, 1].set_title('Distribution of Residuals (Detrended)', fontweight='bold')
+axes[0, 1].set_xlabel('Residuals')
+axes[0, 1].set_ylabel('Frequency')
+axes[0, 1].legend()
+axes[0, 1].grid(True, alpha=0.3)
+
+# Box plot by day of week (raw)
+day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+df_day = df.copy()
+df_day['day_name'] = pd.Categorical(df_day['day_name'], categories=day_order, ordered=True)
+sns.boxplot(data=df_day, x='day_name', y=target_var, ax=axes[1, 0])
+axes[1, 0].set_title('Distribution by Day of Week (Raw)', fontweight='bold')
+axes[1, 0].set_xlabel('Day of Week')
+axes[1, 0].set_ylabel('Number of Reported Results')
+axes[1, 0].tick_params(axis='x', rotation=45)
+
+# Box plot by day of week (detrended)
+sns.boxplot(data=df_day, x='day_name', y='residuals', ax=axes[1, 1])
+axes[1, 1].axhline(y=0, color='red', linestyle='--', linewidth=1, alpha=0.5)
+axes[1, 1].set_title('Distribution by Day of Week (Detrended)', fontweight='bold')
+axes[1, 1].set_xlabel('Day of Week')
+axes[1, 1].set_ylabel('Residuals')
+axes[1, 1].tick_params(axis='x', rotation=45)
+
+plt.tight_layout()
+plt.savefig('plots/07_distributions.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("   Saved: plots/07_distributions.png")
+
+# 7.2 Weekday vs Weekend detailed comparison
+print("\n7.2 Creating weekday/weekend detailed analysis...")
+fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+# Time series split
+weekday_data = df[~df['is_weekend']]
+weekend_data = df[df['is_weekend']]
+
+axes[0].plot(weekday_data['Date'], weekday_data[target_var], label='Weekday', alpha=0.7, linewidth=1.5, color='blue')
+axes[0].plot(weekend_data['Date'], weekend_data[target_var], label='Weekend', alpha=0.7, linewidth=1.5, color='orange')
+axes[0].set_title('Time Series: Weekday vs Weekend (Raw)', fontweight='bold')
+axes[0].set_xlabel('Date')
+axes[0].set_ylabel('Number of Reported Results')
+axes[0].legend()
+axes[0].grid(True, alpha=0.3)
+
+# Violin plot
+weekend_violin = pd.DataFrame({
+    'Type': ['Weekday'] * len(weekday_data) + ['Weekend'] * len(weekend_data),
+    'Value': list(weekday_data[target_var]) + list(weekend_data[target_var])
+})
+sns.violinplot(data=weekend_violin, x='Type', y='Value', ax=axes[1])
+axes[1].set_title('Distribution: Weekday vs Weekend (Raw)', fontweight='bold')
+axes[1].set_ylabel('Number of Reported Results')
+axes[1].grid(axis='y', alpha=0.3)
+
+# Detrended comparison
+weekend_violin_resid = pd.DataFrame({
+    'Type': ['Weekday'] * len(weekday_data) + ['Weekend'] * len(weekend_data),
+    'Value': list(weekday_data['residuals']) + list(weekend_data['residuals'])
+})
+sns.violinplot(data=weekend_violin_resid, x='Type', y='Value', ax=axes[2])
+axes[2].axhline(y=0, color='red', linestyle='--', linewidth=1, alpha=0.5)
+axes[2].set_title('Distribution: Weekday vs Weekend (Detrended)', fontweight='bold')
+axes[2].set_ylabel('Residuals')
+axes[2].grid(axis='y', alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('plots/08_weekday_weekend.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("   Saved: plots/08_weekday_weekend.png")
+
+# 7.3 Month-by-month trend analysis
+print("\n7.3 Creating month-by-month analysis...")
+fig, axes = plt.subplots(2, 1, figsize=(14, 10))
+
+month_order = ['January', 'February', 'March', 'April', 'May', 'June',
+               'July', 'August', 'September', 'October', 'November', 'December']
+df['month_name'] = df['Date'].dt.month_name()
+df['month_name'] = pd.Categorical(df['month_name'], categories=month_order, ordered=True)
+
+# Monthly averages with error bars (raw)
+month_stats = df.groupby('month_name')[target_var].agg(['mean', 'std', 'count'])
+month_stats['se'] = month_stats['std'] / np.sqrt(month_stats['count'])
+axes[0].bar(range(len(month_stats)), month_stats['mean'], yerr=month_stats['se'], 
+            color='steelblue', alpha=0.7, capsize=5, edgecolor='black')
+axes[0].set_xticks(range(len(month_stats)))
+axes[0].set_xticklabels(month_stats.index, rotation=45, ha='right')
+axes[0].set_title('Monthly Averages with Standard Error (Raw)', fontweight='bold', fontsize=14)
+axes[0].set_ylabel('Average Number of Reported Results')
+axes[0].grid(axis='y', alpha=0.3)
+
+# Monthly averages (detrended)
+month_stats_resid = df.groupby('month_name')['residuals'].agg(['mean', 'std', 'count'])
+month_stats_resid['se'] = month_stats_resid['std'] / np.sqrt(month_stats_resid['count'])
+colors = ['green' if x > 0 else 'red' for x in month_stats_resid['mean'].values]
+axes[1].bar(range(len(month_stats_resid)), month_stats_resid['mean'], 
+            yerr=month_stats_resid['se'], color=colors, alpha=0.7, capsize=5, edgecolor='black')
+axes[1].axhline(y=0, color='black', linestyle='--', linewidth=1, alpha=0.5)
+axes[1].set_xticks(range(len(month_stats_resid)))
+axes[1].set_xticklabels(month_stats_resid.index, rotation=45, ha='right')
+axes[1].set_title('Monthly Averages with Standard Error (Detrended)', fontweight='bold', fontsize=14)
+axes[1].set_ylabel('Average Residuals')
+axes[1].grid(axis='y', alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('plots/09_monthly_detailed.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("   Saved: plots/09_monthly_detailed.png")
+
+# 7.4 Holiday impact analysis
+print("\n7.4 Creating detailed holiday impact analysis...")
+fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+
+# Holiday vs surrounding days
+holiday_impact = []
+for holiday in df[df['is_holiday']]['holiday_name'].unique():
+    if holiday:
+        holiday_rows = df[df['holiday_name'] == holiday]
+        if len(holiday_rows) > 0:
+            holiday_date = holiday_rows.iloc[0]['Date']
+            # Get surrounding days (±3 days)
+            mask = (df['Date'] >= holiday_date - timedelta(days=3)) & \
+                   (df['Date'] <= holiday_date + timedelta(days=3))
+            surrounding = df[mask].copy()
+            surrounding['days_from_holiday'] = (surrounding['Date'] - holiday_date).dt.days
+            holiday_impact.append(surrounding[['days_from_holiday', target_var, 'residuals', 'holiday_name']])
+
+if holiday_impact:
+    holiday_df = pd.concat(holiday_impact, ignore_index=True)
+    
+    # Raw data
+    holiday_means = holiday_df.groupby('days_from_holiday')[target_var].mean()
+    axes[0, 0].plot(holiday_means.index, holiday_means.values, marker='o', linewidth=2, markersize=8, color='steelblue')
+    axes[0, 0].axvline(x=0, color='red', linestyle='--', linewidth=2, alpha=0.5, label='Holiday')
+    axes[0, 0].set_title('Holiday Impact: Days Around Holiday (Raw)', fontweight='bold')
+    axes[0, 0].set_xlabel('Days from Holiday')
+    axes[0, 0].set_ylabel('Average Number of Reported Results')
+    axes[0, 0].legend()
+    axes[0, 0].grid(True, alpha=0.3)
+    
+    # Detrended
+    holiday_means_resid = holiday_df.groupby('days_from_holiday')['residuals'].mean()
+    axes[0, 1].plot(holiday_means_resid.index, holiday_means_resid.values, marker='o', linewidth=2, markersize=8, color='green')
+    axes[0, 1].axvline(x=0, color='red', linestyle='--', linewidth=2, alpha=0.5, label='Holiday')
+    axes[0, 1].axhline(y=0, color='black', linestyle='--', linewidth=1, alpha=0.3)
+    axes[0, 1].set_title('Holiday Impact: Days Around Holiday (Detrended)', fontweight='bold')
+    axes[0, 1].set_xlabel('Days from Holiday')
+    axes[0, 1].set_ylabel('Average Residuals')
+    axes[0, 1].legend()
+    axes[0, 1].grid(True, alpha=0.3)
+
+# Top holidays comparison
+top_holidays = df[df['is_holiday']].groupby('holiday_name')[target_var].mean().sort_values(ascending=False).head(8)
+top_holidays_resid = df[df['is_holiday']].groupby('holiday_name')['residuals'].mean().reindex(top_holidays.index)
+
+axes[1, 0].barh(range(len(top_holidays)), top_holidays.values, color='steelblue', alpha=0.7)
+axes[1, 0].set_yticks(range(len(top_holidays)))
+axes[1, 0].set_yticklabels(top_holidays.index)
+axes[1, 0].set_title('Top Holidays by Average Results (Raw)', fontweight='bold')
+axes[1, 0].set_xlabel('Average Number of Reported Results')
+axes[1, 0].grid(axis='x', alpha=0.3)
+
+colors = ['green' if x > 0 else 'red' for x in top_holidays_resid.values]
+axes[1, 1].barh(range(len(top_holidays_resid)), top_holidays_resid.values, color=colors, alpha=0.7)
+axes[1, 1].axvline(x=0, color='black', linestyle='--', linewidth=1, alpha=0.5)
+axes[1, 1].set_yticks(range(len(top_holidays_resid)))
+axes[1, 1].set_yticklabels(top_holidays_resid.index)
+axes[1, 1].set_title('Top Holidays by Average Residuals (Detrended)', fontweight='bold')
+axes[1, 1].set_xlabel('Average Residuals')
+axes[1, 1].grid(axis='x', alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('plots/10_holiday_impact.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("   Saved: plots/10_holiday_impact.png")
+
+# 7.5 Pattern detection: day of month effects
+print("\n7.5 Creating day of month pattern analysis...")
+fig, axes = plt.subplots(2, 1, figsize=(14, 8))
+
+# Day of month (raw)
+day_of_month = df.groupby('day')[target_var].agg(['mean', 'std', 'count'])
+day_of_month['se'] = day_of_month['std'] / np.sqrt(day_of_month['count'])
+axes[0].plot(day_of_month.index, day_of_month['mean'], marker='o', linewidth=2, markersize=4, color='steelblue')
+axes[0].fill_between(day_of_month.index, 
+                     day_of_month['mean'] - day_of_month['se'],
+                     day_of_month['mean'] + day_of_month['se'],
+                     alpha=0.3, color='steelblue')
+axes[0].set_title('Average Results by Day of Month (Raw) with Confidence Intervals', fontweight='bold')
+axes[0].set_xlabel('Day of Month')
+axes[0].set_ylabel('Average Number of Reported Results')
+axes[0].grid(True, alpha=0.3)
+
+# Day of month (detrended)
+day_of_month_resid = df.groupby('day')['residuals'].agg(['mean', 'std', 'count'])
+day_of_month_resid['se'] = day_of_month_resid['std'] / np.sqrt(day_of_month_resid['count'])
+axes[1].plot(day_of_month_resid.index, day_of_month_resid['mean'], marker='o', linewidth=2, markersize=4, color='green')
+axes[1].fill_between(day_of_month_resid.index,
+                    day_of_month_resid['mean'] - day_of_month_resid['se'],
+                    day_of_month_resid['mean'] + day_of_month_resid['se'],
+                    alpha=0.3, color='green')
+axes[1].axhline(y=0, color='red', linestyle='--', linewidth=1, alpha=0.5)
+axes[1].set_title('Average Residuals by Day of Month (Detrended) with Confidence Intervals', fontweight='bold')
+axes[1].set_xlabel('Day of Month')
+axes[1].set_ylabel('Average Residuals')
+axes[1].grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('plots/11_day_of_month_patterns.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("   Saved: plots/11_day_of_month_patterns.png")
+
+# 7.6 Summary insights
+print("\n" + "=" * 80)
+print("KEY INSIGHTS AND PATTERNS")
+print("=" * 80)
+
+print("\n📊 RAW DATA INSIGHTS:")
+print("-" * 80)
+print(f"1. Overall Trend: Results range from {df[target_var].min():,.0f} to {df[target_var].max():,.0f}")
+print(f"   Peak popularity: {df.loc[df[target_var].idxmax(), 'Date'].strftime('%B %d, %Y')} ({df[target_var].max():,.0f} results)")
+print(f"   Lowest: {df.loc[df[target_var].idxmin(), 'Date'].strftime('%B %d, %Y')} ({df[target_var].min():,.0f} results)")
+
+best_day = df.groupby('day_name')[target_var].mean().idxmax()
+worst_day = df.groupby('day_name')[target_var].mean().idxmin()
+print(f"\n2. Day of Week Effect (Raw):")
+print(f"   Highest average: {best_day} ({df.groupby('day_name')[target_var].mean()[best_day]:,.0f})")
+print(f"   Lowest average: {worst_day} ({df.groupby('day_name')[target_var].mean()[worst_day]:,.0f})")
+
+best_month = df.groupby('month_name')[target_var].mean().idxmax()
+worst_month = df.groupby('month_name')[target_var].mean().idxmin()
+print(f"\n3. Month Effect (Raw):")
+print(f"   Highest average: {best_month} ({df.groupby('month_name')[target_var].mean()[best_month]:,.0f})")
+print(f"   Lowest average: {worst_month} ({df.groupby('month_name')[target_var].mean()[worst_month]:,.0f})")
+
+weekend_diff = df[df['is_weekend']][target_var].mean() - df[~df['is_weekend']][target_var].mean()
+print(f"\n4. Weekend Effect (Raw):")
+print(f"   Weekend average: {df[df['is_weekend']][target_var].mean():,.0f}")
+print(f"   Weekday average: {df[~df['is_weekend']][target_var].mean():,.0f}")
+print(f"   Difference: {weekend_diff:,.0f} ({weekend_diff/df[~df['is_weekend']][target_var].mean()*100:.1f}%)")
+
+print("\n📈 DETRENDED DATA INSIGHTS:")
+print("-" * 80)
+best_day_resid = df.groupby('day_name')['residuals'].mean().idxmax()
+worst_day_resid = df.groupby('day_name')['residuals'].mean().idxmin()
+print(f"\n1. Day of Week Effect (After Removing Trend):")
+print(f"   Highest residual: {best_day_resid} ({df.groupby('day_name')['residuals'].mean()[best_day_resid]:,.0f})")
+print(f"   Lowest residual: {worst_day_resid} ({df.groupby('day_name')['residuals'].mean()[worst_day_resid]:,.0f})")
+
+weekend_diff_resid = df[df['is_weekend']]['residuals'].mean() - df[~df['is_weekend']]['residuals'].mean()
+print(f"\n2. Weekend Effect (After Removing Trend):")
+print(f"   Weekend residual: {df[df['is_weekend']]['residuals'].mean():,.0f}")
+print(f"   Weekday residual: {df[~df['is_weekend']]['residuals'].mean():,.0f}")
+print(f"   Difference: {weekend_diff_resid:,.0f}")
+
+holiday_diff_resid = df[df['is_holiday']]['residuals'].mean() - df[~df['is_holiday']]['residuals'].mean()
+print(f"\n3. Holiday Effect (After Removing Trend):")
+print(f"   Holiday residual: {df[df['is_holiday']]['residuals'].mean():,.0f}")
+print(f"   Non-holiday residual: {df[~df['is_holiday']]['residuals'].mean():,.0f}")
+print(f"   Difference: {holiday_diff_resid:,.0f}")
+
+print("\n💡 INTERPRETATION NOTES:")
+print("-" * 80)
+print("• Raw data shows the full story including Wordle's popularity trend")
+print("• Detrended data isolates time variable effects from overall popularity")
+print("• Both perspectives are valid - choose based on your research question")
+print("• The 'trend' itself (Wordle's popularity over time) is part of the story")
+
+# ============================================================================
+# 8. SAVE ENHANCED DATASET
 # ============================================================================
 print("\n" + "=" * 80)
 print("SAVING ENHANCED DATASET")
@@ -514,8 +1112,21 @@ new_features = [c for c in df.columns if c not in original_cols]
 print(f"Added {len(new_features)} new time-related features")
 
 print("\n" + "=" * 80)
-print("ANALYSIS COMPLETE!")
+print("COMPREHENSIVE EDA COMPLETE!")
 print("=" * 80)
-print(f"\nAll plots saved to: plots/")
-print(f"Enhanced dataset saved to: {output_file}")
+print(f"\n📊 Generated {11} visualization plots:")
+print("   01_time_series.png - Time series with trend")
+print("   02_day_of_week.png - Day of week analysis")
+print("   03_month_season.png - Month and season analysis")
+print("   04_holidays.png - Holiday analysis")
+print("   05_day_of_month.png - Day of month patterns")
+print("   06_correlation.png - Correlation heatmaps")
+print("   07_distributions.png - Distribution analysis")
+print("   08_weekday_weekend.png - Weekday/weekend detailed")
+print("   09_monthly_detailed.png - Monthly detailed analysis")
+print("   10_holiday_impact.png - Holiday impact analysis")
+print("   11_day_of_month_patterns.png - Day of month patterns")
+print(f"\n📁 All plots saved to: plots/")
+print(f"📁 Enhanced dataset saved to: {output_file}")
+print("\n✅ Analysis complete! Review plots and insights above.")
 
